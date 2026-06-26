@@ -1,0 +1,6 @@
+{
+  "name": "3D Car Racing Game",
+  "description": "An interactive 3D car racing game built with React, Three.js, and Tailwind CSS. Includes a Garage, Upgrades, AI opponents, 3 tracks, and a complete Unity C# script exporter and setup guide.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
