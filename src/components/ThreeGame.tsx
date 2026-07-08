@@ -3,6 +3,152 @@ import * as THREE from 'three';
 import { Play, RotateCcw, AlertCircle } from 'lucide-react';
 import { Track, Car, CarUpgrades, RaceParticipant } from '../types';
 
+// --- MULTIPLAYER & 3D VISUALIZATION HELPERS ---
+function createPlayerNameplateSprite(name: string, colorHex: string, health: number) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    // Semi-transparent rounded backdrop
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+    ctx.beginPath();
+    ctx.roundRect(4, 4, 248, 56, 12);
+    ctx.fill();
+    
+    // Border colored with player's custom accent
+    ctx.strokeStyle = colorHex;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+
+    // Player Name Text
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 18px "Space Grotesk", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(name, 128, 22);
+
+    // Health/Integrity indicator bar underneath
+    const barWidth = 180;
+    const barHeight = 6;
+    const barX = (256 - barWidth) / 2;
+    const barY = 40;
+
+    // Background of health bar (dark red)
+    ctx.fillStyle = 'rgba(244, 63, 94, 0.3)';
+    ctx.fillRect(barX, barY, barWidth, barHeight);
+
+    // Filled health bar (green or red)
+    ctx.fillStyle = health < 40 ? '#f43f5e' : '#10b981';
+    ctx.fillRect(barX, barY, barWidth * (health / 100), barHeight);
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
+  const sprite = new THREE.Sprite(material);
+  sprite.scale.set(4.5, 1.125, 1);
+  sprite.position.y = 2.4; // float above car
+  return sprite;
+}
+
+function spawnFloatingEmojiSprite(parentGroup: THREE.Group, emoji: string) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    ctx.font = '72px serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(emoji, 64, 64);
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
+  const sprite = new THREE.Sprite(material);
+  sprite.scale.set(2.5, 2.5, 1);
+  sprite.position.set(0, 3.2, 0); // start just above nameplate
+  parentGroup.add(sprite);
+
+  // Animate sprite upward and fade out
+  const startTime = performance.now();
+  const duration = 1500; // 1.5s duration
+
+  const animate = () => {
+    const elapsed = performance.now() - startTime;
+    const t = elapsed / duration;
+
+    if (t < 1) {
+      sprite.position.y = 3.2 + t * 2.5; // move up
+      sprite.material.opacity = 1 - t;   // fade out
+      requestAnimationFrame(animate);
+    } else {
+      parentGroup.remove(sprite);
+      texture.dispose();
+      material.dispose();
+    }
+  };
+  animate();
+}
+
+function createRemotePlayerCarMesh(colorHex: string, name: string) {
+  const remoteGroup = new THREE.Group();
+  
+  // Body
+  const bodyGeo = new THREE.BoxGeometry(2.4, 0.7, 4.8);
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(colorHex),
+    roughness: 0.25,
+    metalness: 0.8,
+  });
+  const bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
+  bodyMesh.position.y = 0.55;
+  bodyMesh.castShadow = true;
+  bodyMesh.receiveShadow = true;
+  remoteGroup.add(bodyMesh);
+
+  // Cabin
+  const cabinGeo = new THREE.BoxGeometry(1.8, 0.6, 2.0);
+  const cabinMat = new THREE.MeshStandardMaterial({
+    color: 0x0f172a,
+    roughness: 0.1,
+    metalness: 0.9,
+  });
+  const cabinMesh = new THREE.Mesh(cabinGeo, cabinMat);
+  cabinMesh.position.set(0, 1.05, -0.2);
+  cabinMesh.castShadow = true;
+  remoteGroup.add(cabinMesh);
+
+  // Lights
+  const lightGeo = new THREE.BoxGeometry(0.35, 0.15, 0.1);
+  const lightMat = new THREE.MeshBasicMaterial({ color: 0xfffbeb }); // glowing headlights
+  const lLight = new THREE.Mesh(lightGeo, lightMat);
+  lLight.position.set(-0.8, 0.5, 2.38);
+  const rLight = lLight.clone();
+  rLight.position.x = 0.8;
+  remoteGroup.add(lLight);
+  remoteGroup.add(rLight);
+
+  // Wheels
+  const wheelGeo = new THREE.CylinderGeometry(0.55, 0.55, 0.5, 12);
+  wheelGeo.rotateZ(Math.PI / 2);
+  const wheelMat = new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.8 });
+  const wheelOffsets = [
+    new THREE.Vector3(-1.15, 0.5, 1.4),
+    new THREE.Vector3(1.15, 0.5, 1.4),
+    new THREE.Vector3(-1.15, 0.5, -1.4),
+    new THREE.Vector3(1.15, 0.5, -1.4),
+  ];
+  wheelOffsets.forEach((offset) => {
+    const wMesh = new THREE.Mesh(wheelGeo, wheelMat);
+    wMesh.position.copy(offset);
+    wMesh.castShadow = true;
+    remoteGroup.add(wMesh);
+  });
+
+  return remoteGroup;
+}
+
 interface ThreeGameProps {
   activeTrack: Track;
   selectedCar: Car;
@@ -10,7 +156,8 @@ interface ThreeGameProps {
   difficulty: 'easy' | 'medium' | 'hard';
   audioEnabled: boolean;
   volume: number;
-  onRaceFinished: (standing: number, time: number, rewardCoins: number) => void;
+  initialWeather?: 'clear' | 'rain' | 'snow' | 'fog';
+  onRaceFinished: (standing: number, time: number, rewardCoins: number, fastestLap?: number) => void;
   onExit: () => void;
 }
 
@@ -21,6 +168,7 @@ export default function ThreeGame({
   difficulty,
   audioEnabled,
   volume,
+  initialWeather = 'clear',
   onRaceFinished,
   onExit,
 }: ThreeGameProps) {
@@ -39,6 +187,50 @@ export default function ThreeGame({
   const [cameraMode, setCameraMode] = useState<'thirdPerson' | 'hood' | 'cockpit'>('thirdPerson');
   const [paused, setPaused] = useState<boolean>(false);
   const [debugLog, setDebugLog] = useState<string>('');
+
+  // Weather state
+  const [weather, setWeather] = useState<'clear' | 'rain' | 'snow' | 'fog'>(initialWeather);
+  const weatherRef = useRef<'clear' | 'rain' | 'snow' | 'fog'>(initialWeather);
+
+  // Real-life simulation states
+  const [fuel, setFuel] = useState<number>(100);
+  const [tireWear, setTireWear] = useState<number>(0);
+  const [tireTemp, setTireTemp] = useState<number>(80);
+  const [carHealth, setCarHealth] = useState<number>(100);
+
+  // Multiplayer & Damage FX States
+  const [collisionFlash, setCollisionFlash] = useState<boolean>(false);
+  const [chatMessages, setChatMessages] = useState<{ id: string; sender: string; text: string; type: string }[]>([]);
+  const [chatInput, setChatInput] = useState<string>('');
+  const [activeInput, setActiveInput] = useState<boolean>(false);
+
+  const socketRef = useRef<WebSocket | null>(null);
+  const playerIdRef = useRef<string>('racer_' + Math.random().toString(36).substr(2, 6));
+  const flashTimeoutRef = useRef<any>(null);
+
+  const triggerCollisionFlash = () => {
+    setCollisionFlash(true);
+    if (flashTimeoutRef.current) clearTimeout(flashTimeoutRef.current);
+    flashTimeoutRef.current = setTimeout(() => {
+      setCollisionFlash(false);
+    }, 250);
+  };
+
+  // Pit Stop states
+  const [isPitting, setIsPitting] = useState<boolean>(false);
+  const [pitServiceStatus, setPitServiceStatus] = useState<'idle' | 'refueling' | 'tire_change' | 'repair' | 'done'>('idle');
+  const [rpm, setRpm] = useState<number>(1000);
+  const [currentGear, setCurrentGear] = useState<number>(1);
+
+  const handleWeatherChange = (newWeather: 'clear' | 'rain' | 'snow' | 'fog') => {
+    setWeather(newWeather);
+    weatherRef.current = newWeather;
+  };
+
+  useEffect(() => {
+    setWeather(initialWeather);
+    weatherRef.current = initialWeather;
+  }, [initialWeather]);
 
   // Physics tuning values based on car & upgrades
   // Upgrades level 1-5 increase base stats by 10% per level
@@ -68,10 +260,18 @@ export default function ThreeGame({
       isDrifting: false,
       nitro: 100, // percentage
       health: 100,
+      fuel: 100,
+      tireWear: 0,
+      tireTemp: 80,
+      isPitting: false,
+      pitProgress: 0,
+      pitStatus: 'idle' as 'idle' | 'refueling' | 'tire_change' | 'repair' | 'done',
       lap: 1,
       checkpoint: 0,
       finished: false,
       finishTime: 0,
+      lapStartTime: 0,
+      lapTimes: [] as number[],
     },
     aiCars: [
       { id: 'ai-1', name: 'Viper Apex', speedFactor: 0.84, pos: new THREE.Vector3(), dir: 0, progress: 0.02, offset: -5, color: '#f43f5e', currentLap: 1, lastCheckpoint: 0, finished: false, finishTime: 0 },
@@ -83,6 +283,25 @@ export default function ThreeGame({
     trackPoints: [] as THREE.Vector3[],
     trackSpline: null as THREE.CatmullRomCurve3 | null,
     checkpoints: [] as THREE.Vector3[],
+    pitCenter: new THREE.Vector3(),
+    pitResetReady: true,
+    remotePlayers: new Map<string, {
+      id: string;
+      name: string;
+      carId: string;
+      color: string;
+      pos: THREE.Vector3;
+      targetPos: THREE.Vector3;
+      dir: number;
+      targetDir: number;
+      speed: number;
+      health: number;
+      lap: number;
+      checkpoint: number;
+      finished: boolean;
+      meshGroup: THREE.Group | null;
+      nameplateSprite: THREE.Sprite | null;
+    }>(),
   });
 
   // Sound refs
@@ -211,6 +430,100 @@ export default function ThreeGame({
     }
   };
 
+  const playPitRefuelingSound = () => {
+    if (!audioEnabled) return;
+    const ctx = audioContextRef.current;
+    if (!ctx || ctx.state === 'suspended') return;
+    try {
+      const osc = ctx.createOscillator();
+      const lfo = ctx.createOscillator();
+      const lfoGain = ctx.createGain();
+      const gainNode = ctx.createGain();
+      
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(65, ctx.currentTime);
+      
+      lfo.type = 'sawtooth';
+      lfo.frequency.setValueAtTime(8, ctx.currentTime);
+      lfoGain.gain.setValueAtTime(25, ctx.currentTime);
+      
+      gainNode.gain.setValueAtTime(0.02 * volume, ctx.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
+      
+      lfo.connect(lfoGain);
+      lfoGain.connect(osc.frequency);
+      osc.connect(gainNode);
+      gainNode.connect(ctx.destination);
+      
+      lfo.start();
+      osc.start();
+      lfo.stop(ctx.currentTime + 0.25);
+      osc.stop(ctx.currentTime + 0.25);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const playPneumaticGunSound = () => {
+    if (!audioEnabled) return;
+    const ctx = audioContextRef.current;
+    if (!ctx || ctx.state === 'suspended') return;
+    try {
+      const osc = ctx.createOscillator();
+      const gainNode = ctx.createGain();
+      
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(380, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(140, ctx.currentTime + 0.15);
+      
+      gainNode.gain.setValueAtTime(0.025 * volume, ctx.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+      
+      osc.connect(gainNode);
+      gainNode.connect(ctx.destination);
+      
+      osc.start();
+      osc.stop(ctx.currentTime + 0.16);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const playWeldingSparkSound = () => {
+    if (!audioEnabled) return;
+    const ctx = audioContextRef.current;
+    if (!ctx || ctx.state === 'suspended') return;
+    try {
+      const bufferSize = ctx.sampleRate * 0.08;
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) {
+        data[i] = Math.random() * 2 - 1;
+      }
+      
+      const noiseNode = ctx.createBufferSource();
+      noiseNode.buffer = buffer;
+      
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(3500, ctx.currentTime);
+      filter.Q.setValueAtTime(8, ctx.currentTime);
+      
+      const gainNode = ctx.createGain();
+      gainNode.gain.setValueAtTime(0.015 * volume, ctx.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.07);
+      
+      noiseNode.connect(filter);
+      filter.connect(gainNode);
+      gainNode.connect(ctx.destination);
+      
+      noiseNode.start();
+      noiseNode.stop(ctx.currentTime + 0.08);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   // Play a procedural crash noise trigger
   const playCrashSound = () => {
     const ctx = audioContextRef.current;
@@ -275,6 +588,31 @@ export default function ThreeGame({
         new THREE.Vector3(-150, 0, 140),
         new THREE.Vector3(-210, -3, 30),
         new THREE.Vector3(-100, 0, -40),
+      ];
+    } else if (activeTrack.id === 'track_volcano') {
+      // Volcanic rim with severe heat climbs and obsidian turns
+      pts = [
+        new THREE.Vector3(0, 0, 0),
+        new THREE.Vector3(100, 8, -20),
+        new THREE.Vector3(160, 18, 50),
+        new THREE.Vector3(110, 22, 130),
+        new THREE.Vector3(20, 12, 170),
+        new THREE.Vector3(-60, 15, 120),
+        new THREE.Vector3(-120, 5, 20),
+        new THREE.Vector3(-70, 0, -40),
+      ];
+    } else if (activeTrack.id === 'track_cosmic') {
+      // Cosmic track sweeping through stellar loops
+      pts = [
+        new THREE.Vector3(0, 0, 0),
+        new THREE.Vector3(120, 15, 10),
+        new THREE.Vector3(200, 35, 90),
+        new THREE.Vector3(150, 45, 200),
+        new THREE.Vector3(40, 30, 150),
+        new THREE.Vector3(-80, 25, 240),
+        new THREE.Vector3(-160, 12, 160),
+        new THREE.Vector3(-180, 5, 60),
+        new THREE.Vector3(-100, 0, -20),
       ];
     } else {
       // Mountain alpine pass with steep winding hairpins and climbs
@@ -366,6 +704,72 @@ export default function ThreeGame({
     const pointsCount = 300;
     const roadPoints = roadSpline.getPoints(pointsCount);
 
+    // Custom colors depending on active track
+    let pavementColor = 0x22252a;
+    let stripeColor = 0x10b981;
+    if (activeTrack.id === 'track_desert') {
+      pavementColor = 0x3d2819;
+      stripeColor = 0xf59e0b;
+    } else if (activeTrack.id === 'track_mountain') {
+      pavementColor = 0x111827;
+      stripeColor = 0x06b6d4;
+    }
+
+    // A. Procedural Asphalt Canvas Texture Generator
+    const asphaltCanvas = document.createElement('canvas');
+    asphaltCanvas.width = 512;
+    asphaltCanvas.height = 512;
+    const asphaltCtx = asphaltCanvas.getContext('2d');
+    if (asphaltCtx) {
+      // Asphalt base slate shade
+      let asphaltHex = '#1e293b'; // Default City Slate
+      if (activeTrack.id === 'track_desert') {
+        asphaltHex = '#2c1b12'; // Dune Dusty Clay-slate
+      } else if (activeTrack.id === 'track_mountain') {
+        asphaltHex = '#090d16'; // Alpine Deep Midnight
+      }
+      asphaltCtx.fillStyle = asphaltHex;
+      asphaltCtx.fillRect(0, 0, 512, 512);
+
+      // Add high-frequency aggregate noise (sand/asphalt grains)
+      const imgData = asphaltCtx.getImageData(0, 0, 512, 512);
+      const data = imgData.data;
+      for (let idx = 0; idx < data.length; idx += 4) {
+        const grainNoise = (Math.random() - 0.5) * 16;
+        data[idx] = Math.min(255, Math.max(0, data[idx] + grainNoise));
+        data[idx + 1] = Math.min(255, Math.max(0, data[idx + 1] + grainNoise));
+        data[idx + 2] = Math.min(255, Math.max(0, data[idx + 2] + grainNoise));
+      }
+      asphaltCtx.putImageData(imgData, 0, 0);
+
+      // Overlay dark racing rubber tyre wear lines along typical lane centers
+      asphaltCtx.fillStyle = 'rgba(0, 0, 0, 0.22)';
+      asphaltCtx.fillRect(70, 0, 40, 512);
+      asphaltCtx.fillRect(145, 0, 40, 512);
+      asphaltCtx.fillRect(325, 0, 40, 512);
+      asphaltCtx.fillRect(400, 0, 40, 512);
+
+      // Overlay tiny realistic asphalt surface cracks for additional fidelity
+      asphaltCtx.strokeStyle = 'rgba(0, 0, 0, 0.35)';
+      asphaltCtx.lineWidth = 1.2;
+      for (let j = 0; j < 4; j++) {
+        asphaltCtx.beginPath();
+        let currX = Math.random() * 512;
+        let currY = 0;
+        asphaltCtx.moveTo(currX, currY);
+        while (currY < 512) {
+          currX += (Math.random() - 0.5) * 20;
+          currY += 15 + Math.random() * 35;
+          asphaltCtx.lineTo(currX, currY);
+        }
+        asphaltCtx.stroke();
+      }
+    }
+    const asphaltTexture = new THREE.CanvasTexture(asphaltCanvas);
+    asphaltTexture.wrapS = THREE.RepeatWrapping;
+    asphaltTexture.wrapT = THREE.RepeatWrapping;
+    asphaltTexture.repeat.set(1, 40); // Repeat along the length of the racetrack
+
     // Create a smooth extruded 3D ribbon road mesh
     const roadGeometry = new THREE.BufferGeometry();
     const positions: number[] = [];
@@ -403,28 +807,220 @@ export default function ThreeGame({
     roadGeometry.setIndex(indices);
     roadGeometry.computeVertexNormals();
 
-    // Custom textured materials depending on active track
-    let pavementColor = 0x22252a;
-    let stripeColor = 0x10b981;
-    if (activeTrack.id === 'track_desert') {
-      pavementColor = 0x3d2819;
-      stripeColor = 0xf59e0b;
-    } else if (activeTrack.id === 'track_mountain') {
-      pavementColor = 0x111827;
-      stripeColor = 0x06b6d4;
-    }
-
     const roadMaterial = new THREE.MeshStandardMaterial({
-      color: pavementColor,
-      roughness: 0.8,
-      metalness: 0.1,
+      map: asphaltTexture,
+      roughness: 0.85,
+      metalness: 0.12,
       side: THREE.DoubleSide,
     });
     const roadMesh = new THREE.Mesh(roadGeometry, roadMaterial);
     roadMesh.receiveShadow = true;
     scene.add(roadMesh);
 
-    // Decorative Road Guardrails / Neon Borders
+    // B. Build Custom 3D Raised Racing Curbs (Kerbs) with Alternating Colors
+    const buildCurbGeometry = (side: 'left' | 'right') => {
+      const curbGeo = new THREE.BufferGeometry();
+      const curbPositions: number[] = [];
+      const curbColors: number[] = [];
+      const curbIndices: number[] = [];
+      
+      const curbWidth = 1.3;
+      const curbHeight = 0.20;
+      const primaryColor = new THREE.Color(stripeColor);
+      const whiteColor = new THREE.Color(0xf8fafc); // Premium slate-50 pearl
+
+      for (let i = 0; i <= pointsCount; i++) {
+        const u = i / pointsCount;
+        const point = roadSpline.getPointAt(u % 1.0);
+        const tangent = roadSpline.getTangentAt(u % 1.0).normalize();
+        const normal = new THREE.Vector3().crossVectors(tangent, up).normalize();
+        const multiplier = side === 'left' ? -1 : 1;
+
+        // Base road boundary edge
+        const v0 = point.clone().addScaledVector(normal, multiplier * (TRACK_WIDTH / 2));
+        // Raised top outer corner
+        const v1 = point.clone().addScaledVector(normal, multiplier * (TRACK_WIDTH / 2 + curbWidth)).add(new THREE.Vector3(0, curbHeight, 0));
+        // Beveled outer ground touch down
+        const v2 = point.clone().addScaledVector(normal, multiplier * (TRACK_WIDTH / 2 + curbWidth + 0.25));
+
+        curbPositions.push(v0.x, v0.y, v0.z);
+        curbPositions.push(v1.x, v1.y, v1.z);
+        curbPositions.push(v2.x, v2.y, v2.z);
+
+        // Alternating color blocks every 5 steps along the path
+        const isStripe = (i % 10) < 5;
+        const color = isStripe ? primaryColor : whiteColor;
+
+        curbColors.push(color.r, color.g, color.b);
+        curbColors.push(color.r, color.g, color.b);
+        curbColors.push(color.r, color.g, color.b);
+
+        if (i < pointsCount) {
+          const currIdx = i * 3;
+          const nextIdx = (i + 1) * 3;
+
+          // Quad top sloped plane (v0 -> v1)
+          curbIndices.push(currIdx, currIdx + 1, nextIdx);
+          curbIndices.push(currIdx + 1, nextIdx + 1, nextIdx);
+
+          // Quad outer ground drop (v1 -> v2)
+          curbIndices.push(currIdx + 1, currIdx + 2, nextIdx + 1);
+          curbIndices.push(currIdx + 2, nextIdx + 2, nextIdx + 1);
+        }
+      }
+
+      curbGeo.setAttribute('position', new THREE.Float32BufferAttribute(curbPositions, 3));
+      curbGeo.setAttribute('color', new THREE.Float32BufferAttribute(curbColors, 3));
+      curbGeo.setIndex(curbIndices);
+      curbGeo.computeVertexNormals();
+      return curbGeo;
+    };
+
+    const curbMaterial = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.7,
+      metalness: 0.15,
+      side: THREE.DoubleSide
+    });
+
+    const leftCurbMesh = new THREE.Mesh(buildCurbGeometry('left'), curbMaterial);
+    const rightCurbMesh = new THREE.Mesh(buildCurbGeometry('right'), curbMaterial);
+    leftCurbMesh.receiveShadow = true;
+    leftCurbMesh.castShadow = true;
+    rightCurbMesh.receiveShadow = true;
+    rightCurbMesh.castShadow = true;
+    scene.add(leftCurbMesh);
+    scene.add(rightCurbMesh);
+
+    // C. Dashed Glowing Centerline Ribbon
+    const centerLinesGeo = new THREE.BufferGeometry();
+    const clPositions: number[] = [];
+    const clIndices: number[] = [];
+    const lineThickness = 0.32;
+    const clHeightOffset = 0.035;
+
+    for (let i = 0; i < pointsCount; i++) {
+      // Draw a dash for every 4 segments
+      if (i % 4 === 0) {
+        const u1 = i / pointsCount;
+        const u2 = (i + 1.8) / pointsCount;
+
+        const pt1 = roadSpline.getPointAt(u1 % 1.0);
+        const tangent1 = roadSpline.getTangentAt(u1 % 1.0).normalize();
+        const normal1 = new THREE.Vector3().crossVectors(tangent1, up).normalize();
+
+        const pt2 = roadSpline.getPointAt(u2 % 1.0);
+        const tangent2 = roadSpline.getTangentAt(u2 % 1.0).normalize();
+        const normal2 = new THREE.Vector3().crossVectors(tangent2, up).normalize();
+
+        const p1_l = pt1.clone().addScaledVector(normal1, -lineThickness / 2).add(new THREE.Vector3(0, clHeightOffset, 0));
+        const p1_r = pt1.clone().addScaledVector(normal1, lineThickness / 2).add(new THREE.Vector3(0, clHeightOffset, 0));
+        const p2_l = pt2.clone().addScaledVector(normal2, -lineThickness / 2).add(new THREE.Vector3(0, clHeightOffset, 0));
+        const p2_r = pt2.clone().addScaledVector(normal2, lineThickness / 2).add(new THREE.Vector3(0, clHeightOffset, 0));
+
+        const baseIdx = clPositions.length / 3;
+
+        clPositions.push(p1_l.x, p1_l.y, p1_l.z);
+        clPositions.push(p1_r.x, p1_r.y, p1_r.z);
+        clPositions.push(p2_l.x, p2_l.y, p2_l.z);
+        clPositions.push(p2_r.x, p2_r.y, p2_r.z);
+
+        clIndices.push(baseIdx, baseIdx + 1, baseIdx + 2);
+        clIndices.push(baseIdx + 1, baseIdx + 3, baseIdx + 2);
+      }
+    }
+
+    centerLinesGeo.setAttribute('position', new THREE.Float32BufferAttribute(clPositions, 3));
+    centerLinesGeo.setIndex(clIndices);
+    centerLinesGeo.computeVertexNormals();
+
+    const centerLinesMat = new THREE.MeshBasicMaterial({
+      color: stripeColor,
+      side: THREE.DoubleSide
+    });
+    const centerLinesMesh = new THREE.Mesh(centerLinesGeo, centerLinesMat);
+    scene.add(centerLinesMesh);
+
+    // D. Solid White Lane-Edge Boundaries (just inside racing curbs)
+    const edgeLinesGeo = new THREE.BufferGeometry();
+    const elPositions: number[] = [];
+    const elIndices: number[] = [];
+    const elWidth = 0.16;
+    const elHeightOffset = 0.025;
+
+    for (let i = 0; i <= pointsCount; i++) {
+      const u = i / pointsCount;
+      const pt = roadSpline.getPointAt(u % 1.0);
+      const tangent = roadSpline.getTangentAt(u % 1.0).normalize();
+      const normal = new THREE.Vector3().crossVectors(tangent, up).normalize();
+
+      // Left-lane boundary line center
+      const lLineCenter = pt.clone().addScaledVector(normal, -(TRACK_WIDTH / 2 - 0.7));
+      const l_l = lLineCenter.clone().addScaledVector(normal, -elWidth / 2).add(new THREE.Vector3(0, elHeightOffset, 0));
+      const l_r = lLineCenter.clone().addScaledVector(normal, elWidth / 2).add(new THREE.Vector3(0, elHeightOffset, 0));
+
+      // Right-lane boundary line center
+      const rLineCenter = pt.clone().addScaledVector(normal, (TRACK_WIDTH / 2 - 0.7));
+      const r_l = rLineCenter.clone().addScaledVector(normal, -elWidth / 2).add(new THREE.Vector3(0, elHeightOffset, 0));
+      const r_r = rLineCenter.clone().addScaledVector(normal, elWidth / 2).add(new THREE.Vector3(0, elHeightOffset, 0));
+
+      const baseIdx = elPositions.length / 3;
+
+      elPositions.push(l_l.x, l_l.y, l_l.z);
+      elPositions.push(l_r.x, l_r.y, l_r.z);
+      elPositions.push(r_l.x, r_l.y, r_l.z);
+      elPositions.push(r_r.x, r_r.y, r_r.z);
+
+      if (i < pointsCount) {
+        // Connect left edge line quads
+        elIndices.push(baseIdx, baseIdx + 1, baseIdx + 4);
+        elIndices.push(baseIdx + 1, baseIdx + 5, baseIdx + 4);
+
+        // Connect right edge line quads
+        elIndices.push(baseIdx + 2, baseIdx + 3, baseIdx + 6);
+        elIndices.push(baseIdx + 3, baseIdx + 7, baseIdx + 6);
+      }
+    }
+
+    edgeLinesGeo.setAttribute('position', new THREE.Float32BufferAttribute(elPositions, 3));
+    edgeLinesGeo.setIndex(elIndices);
+    edgeLinesGeo.computeVertexNormals();
+
+    const edgeLinesMat = new THREE.MeshBasicMaterial({
+      color: 0xf8fafc,
+      opacity: 0.65,
+      transparent: true,
+      side: THREE.DoubleSide
+    });
+    const edgeLinesMesh = new THREE.Mesh(edgeLinesGeo, edgeLinesMat);
+    scene.add(edgeLinesMesh);
+
+    // E. Realistic Starter Grid Boxes at the Start-Finish Straight
+    const starterGridMat = new THREE.MeshStandardMaterial({
+      color: 0xf1f5f9,
+      roughness: 0.9,
+      metalness: 0.05
+    });
+
+    for (let g = 0; g < 6; g++) {
+      const uOffset = 1.0 - (0.012 + g * 0.014);
+      const gridPt = roadSpline.getPointAt(uOffset % 1.0);
+      const gridTangent = roadSpline.getTangentAt(uOffset % 1.0).normalize();
+      const gridNormal = new THREE.Vector3().crossVectors(gridTangent, up).normalize();
+
+      const sideMultiplier = g % 2 === 0 ? -1 : 1;
+      const gridPos = gridPt.clone()
+        .addScaledVector(gridNormal, sideMultiplier * (TRACK_WIDTH / 4.5))
+        .add(new THREE.Vector3(0, 0.03, 0));
+
+      const gridBoxGeo = new THREE.BoxGeometry(4.2, 0.02, 2.2);
+      const gridBoxMesh = new THREE.Mesh(gridBoxGeo, starterGridMat);
+      gridBoxMesh.position.copy(gridPos);
+      gridBoxMesh.lookAt(gridPos.clone().add(gridTangent));
+      scene.add(gridBoxMesh);
+    }
+
+    // F. Decorative Road Guardrails / Neon Borders & Support Pillars
     const leftRails: THREE.Vector3[] = [];
     const rightRails: THREE.Vector3[] = [];
     for (let i = 0; i <= pointsCount; i++) {
@@ -433,19 +1029,52 @@ export default function ThreeGame({
       const tangent = roadSpline.getTangentAt(u % 1.0).normalize();
       const normal = new THREE.Vector3().crossVectors(tangent, up).normalize();
       
-      leftRails.push(point.clone().addScaledVector(normal, -(TRACK_WIDTH / 2 + 0.5)));
-      rightRails.push(point.clone().addScaledVector(normal, (TRACK_WIDTH / 2 + 0.5)));
+      leftRails.push(point.clone().addScaledVector(normal, -(TRACK_WIDTH / 2 + 0.65)));
+      rightRails.push(point.clone().addScaledVector(normal, (TRACK_WIDTH / 2 + 0.65)));
     }
 
     const railMaterial = new THREE.MeshBasicMaterial({ color: stripeColor });
     
-    const leftRailGeo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(leftRails, true), 120, 0.4, 6, true);
-    const rightRailGeo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(rightRails, true), 120, 0.4, 6, true);
+    const leftRailGeo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(leftRails, true), 120, 0.35, 6, true);
+    const rightRailGeo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(rightRails, true), 120, 0.35, 6, true);
     
     const leftRailMesh = new THREE.Mesh(leftRailGeo, railMaterial);
     const rightRailMesh = new THREE.Mesh(rightRailGeo, railMaterial);
     scene.add(leftRailMesh);
     scene.add(rightRailMesh);
+
+    // G. Vertical Metallic Guardrail Support Pillars
+    const supportPillarsGroup = new THREE.Group();
+    const pillarGeo = new THREE.CylinderGeometry(0.12, 0.15, 0.9, 6);
+    const pillarMat = new THREE.MeshStandardMaterial({
+      color: 0x475569, // Slate-600 Steel
+      metalness: 0.85,
+      roughness: 0.25
+    });
+
+    for (let i = 0; i <= pointsCount; i += 6) {
+      const u = i / pointsCount;
+      const pt = roadSpline.getPointAt(u % 1.0);
+      const tangent = roadSpline.getTangentAt(u % 1.0).normalize();
+      const normal = new THREE.Vector3().crossVectors(tangent, up).normalize();
+
+      // Left support pillar
+      const leftPillar = new THREE.Mesh(pillarGeo, pillarMat);
+      leftPillar.position.copy(pt.clone().addScaledVector(normal, -(TRACK_WIDTH / 2 + 0.65)));
+      leftPillar.position.y += 0.45;
+      leftPillar.lookAt(pt.clone().add(tangent));
+      leftPillar.castShadow = true;
+      supportPillarsGroup.add(leftPillar);
+
+      // Right support pillar
+      const rightPillar = new THREE.Mesh(pillarGeo, pillarMat);
+      rightPillar.position.copy(pt.clone().addScaledVector(normal, (TRACK_WIDTH / 2 + 0.65)));
+      rightPillar.position.y += 0.45;
+      rightPillar.lookAt(pt.clone().add(tangent));
+      rightPillar.castShadow = true;
+      supportPillarsGroup.add(rightPillar);
+    }
+    scene.add(supportPillarsGroup);
 
     // 6. Ground Base Plane Mesh
     const groundGeo = new THREE.PlaneGeometry(1200, 1200, 10, 10);
@@ -527,6 +1156,69 @@ export default function ThreeGame({
           rock.castShadow = true;
           decorationGroup.add(rock);
         }
+      } else if (activeTrack.id === 'track_volcano') {
+        // Volcanic Basalt spires and magma-emissive chunks
+        if (Math.random() > 0.5) {
+          const h = 15 + Math.random() * 25;
+          const spireGeo = new THREE.ConeGeometry(2 + Math.random() * 3, h, 5);
+          const spireMat = new THREE.MeshStandardMaterial({
+            color: 0x141419,
+            roughness: 0.9,
+            metalness: 0.1,
+          });
+          const spire = new THREE.Mesh(spireGeo, spireMat);
+          spire.position.set(rx, h / 2 - 0.5, rz);
+          spire.castShadow = true;
+          decorationGroup.add(spire);
+        } else {
+          const rGeo = new THREE.DodecahedronGeometry(2 + Math.random() * 4);
+          const rMat = new THREE.MeshStandardMaterial({
+            color: 0x1f1717,
+            roughness: 0.8,
+            emissive: 0xff4400,
+            emissiveIntensity: 0.5 + Math.random() * 0.5,
+          });
+          const lavaRock = new THREE.Mesh(rGeo, rMat);
+          lavaRock.position.set(rx, 1, rz);
+          lavaRock.rotation.set(Math.random(), Math.random(), Math.random());
+          lavaRock.castShadow = true;
+          decorationGroup.add(lavaRock);
+        }
+      } else if (activeTrack.id === 'track_cosmic') {
+        // Cosmic glowing spires and celestial structures
+        if (Math.random() > 0.4) {
+          const h = 10 + Math.random() * 15;
+          const cryGeo = new THREE.CylinderGeometry(0, 2 + Math.random() * 2, h, 5);
+          const cryMat = new THREE.MeshStandardMaterial({
+            color: 0xa855f7,
+            emissive: 0x7e22ce,
+            emissiveIntensity: 0.6 + Math.random() * 0.4,
+            metalness: 0.9,
+            roughness: 0.1,
+          });
+          const crystal = new THREE.Mesh(cryGeo, cryMat);
+          crystal.position.set(rx, h / 2 - 0.5, rz);
+          crystal.rotation.set(Math.random() * 0.2, Math.random() * Math.PI, Math.random() * 0.2);
+          crystal.castShadow = true;
+          decorationGroup.add(crystal);
+        } else {
+          // Floating space beacon
+          const beacon = new THREE.Group();
+          beacon.position.set(rx, 6 + Math.random() * 4, rz);
+
+          const coreGeo = new THREE.OctahedronGeometry(1.5, 0);
+          const coreMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8 });
+          const coreMesh = new THREE.Mesh(coreGeo, coreMat);
+          beacon.add(coreMesh);
+
+          const ringGeo = new THREE.TorusGeometry(2.5, 0.2, 8, 16);
+          const ringMat = new THREE.MeshStandardMaterial({ color: 0xa855f7, metalness: 0.8 });
+          const ringMesh = new THREE.Mesh(ringGeo, ringMat);
+          ringMesh.rotation.x = Math.PI / 2;
+          beacon.add(ringMesh);
+
+          decorationGroup.add(beacon);
+        }
       } else {
         // Mountains: Alpine trees (cone foliage and cylinder trunk)
         const tree = new THREE.Group();
@@ -606,6 +1298,100 @@ export default function ThreeGame({
       archesGroup.add(archFrame);
     }
     scene.add(archesGroup);
+
+    // 8b. Procedurally Generated 3D Pit Stop Bay next to Starting Gate
+    const pitGroup = new THREE.Group();
+    const startPt = stateRef.current.checkpoints[0];
+    const startTangent = roadSpline.getTangentAt(0).normalize();
+    const upVec = new THREE.Vector3(0, 1, 0);
+    const rightVec = new THREE.Vector3().crossVectors(startTangent, upVec).normalize();
+    
+    // Position pit lane 14.5 units to the right of checkpoint 0
+    const pitCenter = startPt.clone().addScaledVector(rightVec, 14.5);
+    pitGroup.position.copy(pitCenter);
+    stateRef.current.pitCenter.copy(pitCenter);
+    
+    // Orient parallel to starting road heading
+    const pitLook = pitCenter.clone().add(startTangent);
+    pitGroup.lookAt(pitLook);
+    
+    // Pit Lane ground pad
+    const padGeo = new THREE.BoxGeometry(8, 0.1, 14);
+    const padMat = new THREE.MeshStandardMaterial({
+      color: 0x0f172a,
+      roughness: 0.8,
+      metalness: 0.1
+    });
+    const padMesh = new THREE.Mesh(padGeo, padMat);
+    padMesh.receiveShadow = true;
+    pitGroup.add(padMesh);
+    
+    // Glowing green pit stop boundaries
+    const boundGeo = new THREE.BoxGeometry(0.3, 0.15, 14);
+    const boundMat = new THREE.MeshBasicMaterial({ color: 0x10b981 });
+    const leftBound = new THREE.Mesh(boundGeo, boundMat);
+    leftBound.position.set(-4, 0.05, 0);
+    pitGroup.add(leftBound);
+    
+    const rightBound = new THREE.Mesh(boundGeo, boundMat);
+    rightBound.position.set(4, 0.05, 0);
+    pitGroup.add(rightBound);
+
+    // Glowing grid lines on the ground
+    const lineCount = 5;
+    for (let l = 0; l < lineCount; l++) {
+      const lineGeo = new THREE.BoxGeometry(7.8, 0.05, 0.15);
+      const lineMesh = new THREE.Mesh(lineGeo, boundMat);
+      lineMesh.position.set(0, 0.06, -7 + (14 * l) / (lineCount - 1));
+      pitGroup.add(lineMesh);
+    }
+    
+    // Canopy pillars
+    const tentPillarGeo = new THREE.CylinderGeometry(0.18, 0.18, 5.5, 8);
+    const tentPillarMat = new THREE.MeshStandardMaterial({ color: 0x64748b, metalness: 0.8, roughness: 0.2 });
+    
+    const flPillar = new THREE.Mesh(tentPillarGeo, tentPillarMat);
+    flPillar.position.set(-3.8, 2.75, -5.5);
+    flPillar.castShadow = true;
+    pitGroup.add(flPillar);
+    
+    const frPillar = new THREE.Mesh(tentPillarGeo, tentPillarMat);
+    frPillar.position.set(3.8, 2.75, -5.5);
+    frPillar.castShadow = true;
+    pitGroup.add(frPillar);
+    
+    const blPillar = new THREE.Mesh(tentPillarGeo, tentPillarMat);
+    blPillar.position.set(-3.8, 2.75, 5.5);
+    blPillar.castShadow = true;
+    pitGroup.add(blPillar);
+    
+    const brPillar = new THREE.Mesh(tentPillarGeo, tentPillarMat);
+    brPillar.position.set(3.8, 2.75, 5.5);
+    brPillar.castShadow = true;
+    pitGroup.add(brPillar);
+    
+    // Canopy top roof
+    const canopyGeo = new THREE.BoxGeometry(8.2, 0.6, 12);
+    const canopyMat = new THREE.MeshStandardMaterial({ color: 0x065f46, roughness: 0.5 }); // Racing dark green
+    const canopy = new THREE.Mesh(canopyGeo, canopyMat);
+    canopy.position.set(0, 5.5, 0);
+    canopy.castShadow = true;
+    pitGroup.add(canopy);
+    
+    // Glowing Sign Board on canopy front facing oncoming cars
+    const signGeo = new THREE.BoxGeometry(5, 1.2, 0.2);
+    const signMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.4 });
+    const frontSign = new THREE.Mesh(signGeo, signMat);
+    frontSign.position.set(0, 5.5, -6.1);
+    pitGroup.add(frontSign);
+
+    const textPlatGeo = new THREE.BoxGeometry(4.6, 0.8, 0.05);
+    const textPlatMat = new THREE.MeshBasicMaterial({ color: 0x10b981 }); // Glowing bright emerald plate!
+    const frontTextSign = new THREE.Mesh(textPlatGeo, textPlatMat);
+    frontTextSign.position.set(0, 5.5, -6.21);
+    pitGroup.add(frontTextSign);
+
+    scene.add(pitGroup);
 
     // 9. Interactive Player Car Model
     const carGroup = new THREE.Group();
@@ -803,11 +1589,16 @@ export default function ThreeGame({
     carGroup.add(rightTail);
 
     // Cylinder Wheels
-    const wheelGeo = new THREE.CylinderGeometry(0.55, 0.55, 0.45, 12);
+    const wheelGeo = new THREE.CylinderGeometry(0.55, 0.55, 0.45, 24);
     wheelGeo.rotateZ(Math.PI / 2);
-    const wheelMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.9 });
+    const wheelMat = new THREE.MeshStandardMaterial({
+      color: 0x111622, // Deep rubber charcoal black
+      roughness: 0.95, // High roughness for realistic matte rubber look
+      metalness: 0.05,
+    });
     
     const wheels: THREE.Mesh[] = [];
+    const frontSteerGroups: THREE.Group[] = [];
     const wheelOffsets = [
       { x: -1.25, y: 0.35, z: 1.5 },   // FL
       { x: 1.25, y: 0.35, z: 1.5 },    // FR
@@ -817,24 +1608,77 @@ export default function ThreeGame({
 
     const rimStyle = selectedCar.rimStyle || 'sports';
 
-    wheelOffsets.forEach((offset) => {
+    wheelOffsets.forEach((offset, idx) => {
+      // Create a wheel container to handle steering (Y-rotation) and position
+      const wheelContainer = new THREE.Group();
+      wheelContainer.position.set(offset.x, offset.y, offset.z);
+      carGroup.add(wheelContainer);
+
+      if (idx === 0 || idx === 1) {
+        frontSteerGroups.push(wheelContainer);
+      }
+
       const wMesh = new THREE.Mesh(wheelGeo, wheelMat);
-      wMesh.position.set(offset.x, offset.y, offset.z);
+      wMesh.position.set(0, 0, 0); // centered inside container
       wMesh.castShadow = true;
+
+      // 1. Proc Tread Block Rings: Add longitudinal tread grooves to the tire outer surface
+      const grooveMat = new THREE.MeshStandardMaterial({ color: 0x070b12, roughness: 0.98 });
+      // Add 2 deep grooves around the center of the tire
+      const grooveGeo = new THREE.CylinderGeometry(0.554, 0.554, 0.03, 24);
+      grooveGeo.rotateZ(Math.PI / 2);
+      
+      const leftGroove = new THREE.Mesh(grooveGeo, grooveMat);
+      leftGroove.position.set(-0.1, 0, 0);
+      wMesh.add(leftGroove);
+      
+      const rightGroove = new THREE.Mesh(grooveGeo, grooveMat);
+      rightGroove.position.set(0.1, 0, 0);
+      wMesh.add(rightGroove);
+
+      // 2. Transverse Tread Blocks: Add radial tread blocks around the perimeter of the tires
+      const treadCount = 16;
+      const treadMat = new THREE.MeshStandardMaterial({ color: 0x151b26, roughness: 0.95 });
+      const treadBarGeo = new THREE.BoxGeometry(0.44, 0.02, 0.07); // Width of tire, thickness, height of block
+      
+      for (let i = 0; i < treadCount; i++) {
+        const angle = (i * Math.PI * 2) / treadCount;
+        const treadBar = new THREE.Mesh(treadBarGeo, treadMat);
+        // Position along the outer face of the wheel cylinder in Y-Z plane
+        treadBar.position.set(0, Math.sin(angle) * 0.55, Math.cos(angle) * 0.55);
+        treadBar.rotation.x = angle; // Align to circumference
+        wMesh.add(treadBar);
+      }
+
+      // 3. Sidewall details (Sports lettering stripe matching performance tier)
+      let sidewallStripeColor = 0x334155; // level 1: standard grey stripe
+      if (upgrades.tires === 2) sidewallStripeColor = 0x3b82f6; // blue racing stripe
+      else if (upgrades.tires === 3) sidewallStripeColor = 0xeab308; // yellow racing stripe
+      else if (upgrades.tires === 4) sidewallStripeColor = 0xf97316; // orange racing stripe
+      else if (upgrades.tires === 5) sidewallStripeColor = 0xef4444; // red racing stripe (highest tier!)
+
+      const isLeft = offset.x < 0;
+      const rimLocalX = isLeft ? -0.235 : 0.235;
+
+      const ringGeo = new THREE.RingGeometry(0.38, 0.43, 24);
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: sidewallStripeColor,
+        side: THREE.DoubleSide,
+      });
+      const sidewallStripe = new THREE.Mesh(ringGeo, ringMat);
+      sidewallStripe.position.set(rimLocalX * 0.98, 0, 0); // flush on sidewall
+      sidewallStripe.rotation.y = Math.PI / 2;
+      wMesh.add(sidewallStripe);
 
       // Dynamic Alloy Rim Group added as child of the wheel mesh to rotate with it!
       const rimGroup = new THREE.Group();
-      
-      // Outer face is at local x = -0.235 (left side wheels) or local x = 0.235 (right side wheels)
-      const isLeft = offset.x < 0;
-      const rimLocalX = isLeft ? -0.235 : 0.235;
       rimGroup.position.set(rimLocalX, 0, 0);
       
       // Orient rim flat face outward
       rimGroup.rotation.y = isLeft ? -Math.PI / 2 : Math.PI / 2;
 
       // Base rim cap disc
-      const rimCapGeo = new THREE.CylinderGeometry(0.48, 0.48, 0.04, 12);
+      const rimCapGeo = new THREE.CylinderGeometry(0.48, 0.48, 0.04, 16);
       rimCapGeo.rotateX(Math.PI / 2);
       
       let rimColor = 0xd1d5db;
@@ -915,7 +1759,7 @@ export default function ThreeGame({
       }
 
       wMesh.add(rimGroup);
-      carGroup.add(wMesh);
+      wheelContainer.add(wMesh);
       wheels.push(wMesh);
     });
 
@@ -975,6 +1819,48 @@ export default function ThreeGame({
         const wMesh = new THREE.Mesh(wheelGeo, wheelMat);
         wMesh.position.set(offset.x, offset.y, offset.z);
         wMesh.castShadow = true;
+
+        // Simple realistic treads for AI
+        const treadCount = 12;
+        const treadMat = new THREE.MeshStandardMaterial({ color: 0x151b26, roughness: 0.95 });
+        const treadBarGeo = new THREE.BoxGeometry(0.44, 0.02, 0.07);
+        for (let i = 0; i < treadCount; i++) {
+          const angle = (i * Math.PI * 2) / treadCount;
+          const treadBar = new THREE.Mesh(treadBarGeo, treadMat);
+          treadBar.position.set(0, Math.sin(angle) * 0.55, Math.cos(angle) * 0.55);
+          treadBar.rotation.x = angle;
+          wMesh.add(treadBar);
+        }
+
+        // Sidewall stripe for AI
+        const isLeft = offset.x < 0;
+        const rimLocalX = isLeft ? -0.235 : 0.235;
+        const ringGeo = new THREE.RingGeometry(0.38, 0.43, 16);
+        const ringMat = new THREE.MeshBasicMaterial({ color: 0xe11d48, side: THREE.DoubleSide }); // ROSY racing stripe for AI!
+        const sidewallStripe = new THREE.Mesh(ringGeo, ringMat);
+        sidewallStripe.position.set(rimLocalX * 0.98, 0, 0);
+        sidewallStripe.rotation.y = Math.PI / 2;
+        wMesh.add(sidewallStripe);
+
+        // Simple metallic rims for AI
+        const rimGroup = new THREE.Group();
+        rimGroup.position.set(rimLocalX, 0, 0);
+        rimGroup.rotation.y = isLeft ? -Math.PI / 2 : Math.PI / 2;
+        const rimCapGeo = new THREE.CylinderGeometry(0.48, 0.48, 0.04, 12);
+        rimCapGeo.rotateX(Math.PI / 2);
+        const rimCapMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, roughness: 0.2, metalness: 0.8 });
+        const rimCap = new THREE.Mesh(rimCapGeo, rimCapMat);
+        rimGroup.add(rimCap);
+
+        // Simple spokes for AI
+        const spokeGeo = new THREE.BoxGeometry(0.08, 0.44, 0.05);
+        for (let i = 0; i < 5; i++) {
+          const spoke = new THREE.Mesh(spokeGeo, rimCapMat);
+          spoke.rotation.z = (i * Math.PI * 2) / 5;
+          rimGroup.add(spoke);
+        }
+
+        wMesh.add(rimGroup);
         g.add(wMesh);
         aiWheels.push(wMesh);
       });
@@ -1072,6 +1958,30 @@ export default function ThreeGame({
       });
     };
 
+    // 11b. Weather Particle FX (Rain / Snow)
+    const weatherParticleCount = 400;
+    const weatherGeometry = new THREE.BufferGeometry();
+    const weatherPositions = new Float32Array(weatherParticleCount * 3);
+
+    for (let i = 0; i < weatherParticleCount; i++) {
+      weatherPositions[i * 3] = (Math.random() - 0.5) * 200;
+      weatherPositions[i * 3 + 1] = Math.random() * 80;
+      weatherPositions[i * 3 + 2] = (Math.random() - 0.5) * 200;
+    }
+
+    weatherGeometry.setAttribute('position', new THREE.BufferAttribute(weatherPositions, 3));
+
+    const weatherMaterial = new THREE.PointsMaterial({
+      color: 0xffffff,
+      size: 0.45,
+      transparent: true,
+      opacity: 0.0, // starts invisible
+      depthWrite: false,
+    });
+
+    const weatherPoints = new THREE.Points(weatherGeometry, weatherMaterial);
+    scene.add(weatherPoints);
+
     // 12. Audio Context initialization on first click
     const startAudioContext = () => {
       if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
@@ -1081,6 +1991,9 @@ export default function ThreeGame({
 
     // Keyboard controls
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (document.activeElement?.tagName === 'INPUT') {
+        return;
+      }
       startAudioContext();
       if (e.key === 'p' || e.key === 'Escape') {
         setPaused((prev) => !prev);
@@ -1091,6 +2004,7 @@ export default function ThreeGame({
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
+      if (document.activeElement?.tagName === 'INPUT') return;
       if (e.key in stateRef.current.keys) {
         stateRef.current.keys[e.key as keyof typeof stateRef.current.keys] = false;
       }
@@ -1098,6 +2012,158 @@ export default function ThreeGame({
 
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
+
+    // --- WEBSOCKET CLIENT CONFIGURATION ---
+    const playerName = localStorage.getItem('race_player_name') || 'YOU';
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}`;
+    const ws = new WebSocket(wsUrl);
+    socketRef.current = ws;
+
+    ws.onopen = () => {
+      console.log('WS: Connected to multiplayer lobby as:', playerName);
+      ws.send(JSON.stringify({
+        type: 'join',
+        playerId: playerIdRef.current,
+        name: playerName,
+        carId: selectedCar.id,
+        color: selectedCar.color,
+        trackId: activeTrack.id,
+        pos: { x: stateRef.current.car.pos.x, y: stateRef.current.car.pos.y, z: stateRef.current.car.pos.z },
+        dir: stateRef.current.car.dir,
+        speed: stateRef.current.car.speed,
+        health: stateRef.current.car.health,
+        lap: stateRef.current.car.lap,
+        checkpoint: stateRef.current.car.checkpoint,
+        finished: stateRef.current.car.finished,
+      }));
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'join_ack') {
+          playerIdRef.current = data.playerId;
+        } else if (data.type === 'state_update') {
+          const serverPlayers = data.players || [];
+          const state = stateRef.current;
+          
+          serverPlayers.forEach((p: any) => {
+            if (p.id === playerIdRef.current) return; // ignore self
+            
+            let existing = state.remotePlayers.get(p.id);
+            if (!existing) {
+              const meshGroup = createRemotePlayerCarMesh(p.color, p.name);
+              scene.add(meshGroup);
+
+              const nameplateSprite = createPlayerNameplateSprite(p.name, p.color, p.health);
+              meshGroup.add(nameplateSprite);
+
+              state.remotePlayers.set(p.id, {
+                id: p.id,
+                name: p.name,
+                carId: p.carId,
+                color: p.color,
+                pos: new THREE.Vector3(p.pos.x, p.pos.y, p.pos.z),
+                targetPos: new THREE.Vector3(p.pos.x, p.pos.y, p.pos.z),
+                dir: p.dir,
+                targetDir: p.dir,
+                speed: p.speed,
+                health: p.health,
+                lap: p.lap,
+                checkpoint: p.checkpoint,
+                finished: p.finished,
+                meshGroup,
+                nameplateSprite,
+              });
+            } else {
+              existing.targetPos.set(p.pos.x, p.pos.y, p.pos.z);
+              existing.targetDir = p.dir;
+              existing.speed = p.speed;
+              existing.lap = p.lap;
+              existing.checkpoint = p.checkpoint;
+              existing.finished = p.finished;
+              
+              if (existing.health !== p.health) {
+                existing.health = p.health;
+                if (existing.meshGroup && existing.nameplateSprite) {
+                  existing.meshGroup.remove(existing.nameplateSprite);
+                  existing.nameplateSprite.material.map.dispose();
+                  existing.nameplateSprite.material.dispose();
+                  
+                  const newSprite = createPlayerNameplateSprite(p.name, p.color, p.health);
+                  existing.nameplateSprite = newSprite;
+                  existing.meshGroup.add(newSprite);
+                }
+              }
+            }
+          });
+
+          // Check if any player left
+          const serverPlayerIds = new Set(serverPlayers.map((p: any) => p.id));
+          state.remotePlayers.forEach((p, id) => {
+            if (!serverPlayerIds.has(id)) {
+              if (p.meshGroup) {
+                scene.remove(p.meshGroup);
+                p.meshGroup.traverse((child) => {
+                  if (child instanceof THREE.Mesh) {
+                    child.geometry.dispose();
+                    if (Array.isArray(child.material)) {
+                      child.material.forEach((m) => m.dispose());
+                    } else {
+                      child.material.dispose();
+                    }
+                  }
+                });
+              }
+              state.remotePlayers.delete(id);
+            }
+          });
+        } else if (data.type === 'player_left') {
+          const state = stateRef.current;
+          const p = state.remotePlayers.get(data.playerId);
+          if (p) {
+            if (p.meshGroup) {
+              scene.remove(p.meshGroup);
+              p.meshGroup.traverse((child) => {
+                if (child instanceof THREE.Mesh) {
+                  child.geometry.dispose();
+                  if (Array.isArray(child.material)) {
+                    child.material.forEach((m) => m.dispose());
+                  } else {
+                    child.material.dispose();
+                  }
+                }
+              });
+            }
+            state.remotePlayers.delete(data.playerId);
+          }
+        } else if (data.type === 'chat' || data.type === 'emoji') {
+          setChatMessages((prev) => {
+            const next = [...prev, {
+              id: Math.random().toString(),
+              sender: data.senderName,
+              text: data.text,
+              type: data.type,
+            }];
+            return next.slice(-20);
+          });
+
+          if (data.type === 'emoji' && data.text) {
+            const senderId = data.playerId;
+            const state = stateRef.current;
+            const p = state.remotePlayers.get(senderId);
+            if (p && p.meshGroup) {
+              spawnFloatingEmojiSprite(p.meshGroup, data.text);
+            } else if (senderId === playerIdRef.current) {
+              spawnFloatingEmojiSprite(carGroup, data.text);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Error handling ws message:', err);
+      }
+    };
 
     // Initial audio trigger
     initSynthSounds();
@@ -1124,6 +2190,7 @@ export default function ThreeGame({
           setCountdown('GO!');
           state.raceActive = true;
           setRaceActive(true);
+          state.car.lapStartTime = state.time;
           // Auto clear "GO!" banner after 1.5 seconds
           setTimeout(() => setCountdown(null), 1500);
         } else if (state.countdownTimer > 0) {
@@ -1137,40 +2204,268 @@ export default function ThreeGame({
         setRaceTime(state.time);
       }
 
+      // --- WEATHER SYSTEM VISUALS & PHYSICS COUPLING ---
+      const activeWeather = weatherRef.current;
+      
+      let gripWeatherMult = 1.0;
+      let accelWeatherMult = 1.0;
+      let speedWeatherMult = 1.0;
+      let aiWeatherMult = 1.0;
+
+      let targetSkyColor = activeTrack.skyColor;
+      let targetFogColor = activeTrack.skyColor;
+      let targetFogDensity = 0.002;
+      let targetOpacity = 0.0;
+      let targetSize = 0.45;
+
+      if (activeWeather === 'rain') {
+        gripWeatherMult = 0.78; // slippery wet road
+        accelWeatherMult = 0.94; // traction loss
+        speedWeatherMult = 0.96;
+        aiWeatherMult = 0.95;
+
+        targetSkyColor = '#1e293b'; // dark rain overcast
+        targetFogColor = '#27303f';
+        targetFogDensity = 0.008;
+        targetOpacity = 0.75;
+        targetSize = 0.35;
+      } else if (activeWeather === 'snow') {
+        gripWeatherMult = 0.58; // extremely slick ice
+        accelWeatherMult = 0.82; // massive wheelspin/power loss
+        speedWeatherMult = 0.90;
+        aiWeatherMult = 0.88;
+
+        targetSkyColor = '#cbd5e1'; // frosty white snow overcast
+        targetFogColor = '#cbd5e1';
+        targetFogDensity = 0.012;
+        targetOpacity = 0.85;
+        targetSize = 0.55;
+      } else if (activeWeather === 'fog') {
+        gripWeatherMult = 0.92; // damp tarmac
+        accelWeatherMult = 0.98;
+        speedWeatherMult = 0.85; // reduced visibility safety cap
+        aiWeatherMult = 0.82;
+
+        targetSkyColor = '#475569'; // dense pea-soup fog
+        targetFogColor = '#475569';
+        targetFogDensity = 0.026; // extremely heavy fog!
+        targetOpacity = 0.0; // no falling particles needed
+      }
+
+      // Smoothly interpolate scene visuals for cinematic look
+      const skyColObj = new THREE.Color(targetSkyColor);
+      const fogColObj = new THREE.Color(targetFogColor);
+      
+      if (scene.background && (scene.background as any).isColor) {
+        (scene.background as THREE.Color).lerp(skyColObj, dt * 2.0);
+      }
+      if (scene.fog) {
+        scene.fog.color.lerp(fogColObj, dt * 2.0);
+        (scene.fog as THREE.FogExp2).density = THREE.MathUtils.lerp((scene.fog as THREE.FogExp2).density, targetFogDensity, dt * 2.0);
+      }
+
+      // Smoothly fade in/out weather particles
+      weatherMaterial.opacity = THREE.MathUtils.lerp(weatherMaterial.opacity, targetOpacity, dt * 2.0);
+      weatherMaterial.size = THREE.MathUtils.lerp(weatherMaterial.size, targetSize, dt * 2.0);
+
+      // Animate falling rain or snow particles
+      if (weatherMaterial.opacity > 0.01) {
+        const positions = weatherGeometry.attributes.position.array as Float32Array;
+        const carPos = state.car.pos;
+        
+        for (let i = 0; i < weatherParticleCount; i++) {
+          let px = positions[i * 3];
+          let py = positions[i * 3 + 1];
+          let pz = positions[i * 3 + 2];
+
+          // Move particles downwards
+          if (activeWeather === 'rain') {
+            py -= dt * 45; // rapid rain drops
+            px += Math.sin(state.time * 2 + i) * 0.1; // mild wind sway
+          } else if (activeWeather === 'snow') {
+            py -= dt * 8; // gentle floating snow flakes
+            px += Math.sin(state.time + i) * 0.25; // beautiful float sway
+            pz += Math.cos(state.time * 0.5 + i) * 0.15;
+          }
+
+          // Bound checking: reset inside a cylinder dome around the car
+          const dx = px - carPos.x;
+          const dz = pz - carPos.z;
+          const distSq = dx * dx + dz * dz;
+
+          if (py < 0 || distSq > 90 * 90) {
+            const angle = Math.random() * Math.PI * 2;
+            const radius = Math.random() * 85;
+            px = carPos.x + Math.sin(angle) * radius;
+            py = 40 + Math.random() * 25; // drop from cloud height
+            pz = carPos.z + Math.cos(angle) * radius;
+          }
+
+          positions[i * 3] = px;
+          positions[i * 3 + 1] = py;
+          positions[i * 3 + 2] = pz;
+        }
+        weatherGeometry.attributes.position.needsUpdate = true;
+      }
+
       // --- PLAYER PHYSICS ENGINE LOGIC ---
       const car = state.car;
       const keys = state.keys;
 
-      // 1. Friction & Steering depending on drift status (handbrake or slide angle)
-      const currentNormalGrip = keys[' '] ? HANDBRAKE_FRICTION : NORMAL_GRIP;
+      // Pit Stop Entry and Servicing Logic
+      const distToPit = car.pos.distanceTo(state.pitCenter);
+      const inPitZone = distToPit < 8.5;
+
+      // Handle Reset of pit trigger lock when player drives away
+      if (distToPit > 12.0) {
+        state.pitResetReady = true;
+      }
+
+      // Check for Pit entry conditions (Speed < 20 km/h inside the pit zone and reset ready)
+      if (inPitZone && car.speed < 20.0 && state.pitResetReady && !car.finished && state.raceActive) {
+        car.isPitting = true;
+        state.pitResetReady = false;
+        car.speed = 0;
+        car.vel.set(0, 0, 0);
+        car.pos.copy(state.pitCenter); // Snap perfectly to service grid
+        car.pitProgress = 0;
+        car.pitStatus = 'refueling';
+        setIsPitting(true);
+        setPitServiceStatus('refueling');
+      }
+
+      // Handle active pit stop servicing sequence
+      if (car.isPitting) {
+        car.speed = 0;
+        car.vel.set(0, 0, 0);
+
+        if (car.pitStatus === 'refueling') {
+          car.fuel = Math.min(car.fuel + dt * 38, 100);
+          if (Math.floor(state.time * 6) % 2 === 0) playPitRefuelingSound();
+          if (car.fuel >= 100) {
+            car.pitStatus = 'tire_change';
+            setPitServiceStatus('tire_change');
+          }
+        } else if (car.pitStatus === 'tire_change') {
+          car.tireWear = Math.max(car.tireWear - dt * 45, 0);
+          car.tireTemp = THREE.MathUtils.lerp(car.tireTemp, 90, dt * 4); // Cool or warm towards ideal temp
+          if (Math.floor(state.time * 4) % 2 === 0) playPneumaticGunSound();
+          if (car.tireWear <= 0) {
+            car.pitStatus = 'repair';
+            setPitServiceStatus('repair');
+          }
+        } else if (car.pitStatus === 'repair') {
+          car.health = Math.min(car.health + dt * 38, 100);
+          if (Math.floor(state.time * 10) % 2 === 0) {
+            playWeldingSparkSound();
+            spawnSpark(car.pos.clone().add(new THREE.Vector3((Math.random() - 0.5) * 2.5, 0.4, (Math.random() - 0.5) * 4)));
+          }
+          if (car.health >= 100) {
+            car.pitStatus = 'done';
+            setPitServiceStatus('done');
+          }
+        } else if (car.pitStatus === 'done') {
+          // Servicing is complete! Wait 1 second then release the car
+          car.pitProgress += dt;
+          if (car.pitProgress > 1.2) {
+            car.isPitting = false;
+            setIsPitting(false);
+            car.speed = 15; // Give a small forward boost out of pit lane
+            car.vel.set(Math.sin(car.dir) * 15, 0, Math.cos(car.dir) * 15);
+            setPitServiceStatus('idle');
+          }
+        }
+      }
+
+      // 1. Weather-Dependent Ambient Temperatures and Tire Thermal Math
+      let ambientTemp = 25;
+      if (activeWeather === 'rain') ambientTemp = 15;
+      if (activeWeather === 'snow') ambientTemp = -5;
+      if (activeWeather === 'fog') ambientTemp = 18;
+
+      if (!car.isPitting) {
+        if (car.isDrifting && car.speed > 8) {
+          // Drifting heats up tires rapidly
+          car.tireTemp = Math.min(car.tireTemp + dt * 26.0, 145);
+          // Drifting increases tire wear significantly
+          car.tireWear = Math.min(car.tireWear + dt * 1.6, 100);
+        } else {
+          // Cool or warm towards dynamic target running temperature
+          const dynamicWarmth = car.speed > 5 ? 42 + (car.speed / MAX_SPEED) * 35 : 0;
+          const targetTemp = ambientTemp + dynamicWarmth;
+          car.tireTemp = THREE.MathUtils.lerp(car.tireTemp, targetTemp, dt * 0.12);
+          
+          // Small gradual tire wear in normal driving
+          if (car.speed > 5) {
+            car.tireWear = Math.min(car.tireWear + dt * 0.015 * (car.speed / MAX_SPEED), 100);
+          }
+        }
+      }
+
+      // Compute tire thermal and wear grip multiplier (0.45x to 1.0x grip scale)
+      let wearGripMult = 1.0 - (car.tireWear / 100) * 0.52;
+      let tempGripMult = 1.0;
+      if (car.tireTemp < 60) {
+        // Cold tires have lower traction
+        tempGripMult = 0.82 + 0.18 * ((car.tireTemp + 5) / 65);
+      } else if (car.tireTemp > 115) {
+        // Overheated tires lose stability
+        tempGripMult = Math.max(0.68, 1.0 - ((car.tireTemp - 115) / 30) * 0.32);
+      }
+      const finalTireGrip = wearGripMult * tempGripMult;
+
+      // 2. Real-Life Fuel Burning Math
+      if (state.raceActive && !car.finished && !car.isPitting) {
+        const throttleApplied = keys.w || keys.Shift;
+        const fuelBurnRate = throttleApplied ? (keys.Shift && car.nitro > 1 ? 0.92 : 0.30) : 0.05;
+        car.fuel = Math.max(car.fuel - dt * fuelBurnRate * (car.speed / MAX_SPEED + 0.18), 0);
+      }
+
+      // Friction & Steering depending on drift status (handbrake or slide angle)
+      const currentNormalGrip = (keys[' '] ? HANDBRAKE_FRICTION : NORMAL_GRIP) * gripWeatherMult * finalTireGrip;
+      const currentDriftGrip = DRIFT_GRIP * gripWeatherMult * finalTireGrip;
       const turnPower = (keys[' '] ? 2.5 : 1.6) * (Math.PI / 180) * (2.0 - (car.speed / MAX_SPEED));
 
-      // Steer turning input
+      // Steer turning input (lock steer turning input if pitting)
       let steeringInput = 0;
-      if (keys.a) steeringInput = 1;
-      if (keys.d) steeringInput = -1;
+      if (!car.isPitting) {
+        if (keys.a) steeringInput = 1;
+        if (keys.d) steeringInput = -1;
+      }
 
       // Steering Wheel Visual articulation
-      wheels[0].rotation.y = steeringInput * 0.45;
-      wheels[1].rotation.y = steeringInput * 0.45;
+      if (frontSteerGroups[0] && frontSteerGroups[1]) {
+        frontSteerGroups[0].rotation.y = steeringInput * 0.45;
+        frontSteerGroups[1].rotation.y = steeringInput * 0.45;
+      }
 
       car.dir += steeringInput * turnPower * Math.min(car.speed / 12, 1);
 
-      // 2. Throttle Motor Power / Brake Torques
+      // 3. Throttle Motor Power / Brake Torques (affected by damage and fuel levels)
       let isBoosting = false;
-      let topCapSpeed = MAX_SPEED;
+      
+      const healthPenalty = 0.45 + 0.55 * (car.health / 100); // 45% speed at 0% health
+      const isOutofFuel = car.fuel <= 0;
+      let topCapSpeed = MAX_SPEED * speedWeatherMult * healthPenalty;
+      let currentAccel = ACCELERATION * accelWeatherMult * healthPenalty;
 
-      if (state.raceActive && !car.finished) {
+      // Out of fuel limp mode overrides normal physics limits
+      if (isOutofFuel) {
+        topCapSpeed = 15;
+        currentAccel = 0.04;
+      }
+
+      if (state.raceActive && !car.finished && !car.isPitting) {
         // Accelerating
         if (keys.w) {
           // Check Nitro triggers
-          if (keys.Shift && car.nitro > 1) {
+          if (keys.Shift && car.nitro > 1 && !isOutofFuel) {
             isBoosting = true;
-            topCapSpeed = MAX_SPEED * NITRO_FORCE;
-            car.speed = Math.min(car.speed + ACCELERATION * 2.5, topCapSpeed);
+            topCapSpeed = MAX_SPEED * NITRO_FORCE * speedWeatherMult * healthPenalty;
+            car.speed = Math.min(car.speed + currentAccel * 2.5, topCapSpeed);
             car.nitro = Math.max(car.nitro - dt * 25, 0);
           } else {
-            car.speed = Math.min(car.speed + ACCELERATION, topCapSpeed);
+            car.speed = Math.min(car.speed + currentAccel, topCapSpeed);
           }
         } else if (keys.s) {
           // Reverse or Brake
@@ -1190,31 +2485,54 @@ export default function ThreeGame({
       car.isDrifting = Math.abs(lateralSlip) > 12 || keys[' '];
 
       // Blend current car direction velocity with sliding momentum
-      car.vel.lerp(velocityVec, car.isDrifting ? DRIFT_GRIP : currentNormalGrip);
+      car.vel.lerp(velocityVec, car.isDrifting ? currentDriftGrip : currentNormalGrip);
       
       // Apply movement displacement
       car.pos.addScaledVector(car.vel, dt * 0.28); // scaling velocity scale to feel rapid in 3D scale
 
-      // Track bounding check: Snap car to road surface mesh or collide with wall guardrails
-      const nearestT = roadSpline.getUtoTmapping(0, 0); // rough check
-      let minDistance = 9999;
-      let closestPointOnSpline = new THREE.Vector3();
-      let splineU = 0;
+      // Track bounding check: Snap car to road surface mesh or collide with wall guardrails using highly-accurate 2D projection
+      let bestCoarseU = 0;
+      let minCoarseDistSq = Infinity;
 
-      // Sample local points for speed
+      // 1. Coarse search (100 samples) across the track using horizontal 2D distance
       for (let s = 0; s <= 100; s++) {
         const u = s / 100;
         const pt = roadSpline.getPointAt(u);
-        const dist = car.pos.distanceTo(pt);
-        if (dist < minDistance) {
-          minDistance = dist;
+        const dx = car.pos.x - pt.x;
+        const dz = car.pos.z - pt.z;
+        const distSq = dx * dx + dz * dz;
+        if (distSq < minCoarseDistSq) {
+          minCoarseDistSq = distSq;
+          bestCoarseU = u;
+        }
+      }
+
+      // 2. Fine search around bestCoarseU (+/- 0.015) to locate the exact closest point
+      const searchRange = 0.03;
+      const fineSteps = 12;
+      let closestPointOnSpline = new THREE.Vector3();
+      let splineU = bestCoarseU;
+      let minFineDistSq = Infinity;
+
+      for (let s = 0; s <= fineSteps; s++) {
+        const offset = -searchRange / 2 + (s / fineSteps) * searchRange;
+        // Wrap u value nicely between 0.0 and 1.0
+        const u = (bestCoarseU + offset + 1.0) % 1.0;
+        const pt = roadSpline.getPointAt(u);
+        const dx = car.pos.x - pt.x;
+        const dz = car.pos.z - pt.z;
+        const distSq = dx * dx + dz * dz;
+        if (distSq < minFineDistSq) {
+          minFineDistSq = distSq;
           closestPointOnSpline.copy(pt);
           splineU = u;
         }
       }
 
-      // Check height elevation snap
-      car.pos.y = THREE.MathUtils.lerp(car.pos.y, closestPointOnSpline.y, 0.1);
+      const minDistance = Math.sqrt(minFineDistSq);
+
+      // Check height elevation snap - Time-corrected highly-responsive snapping to prevent car from sinking on steep hills
+      car.pos.y = THREE.MathUtils.lerp(car.pos.y, closestPointOnSpline.y, Math.min(1.0, dt * 25.0));
 
       // Handle track boundary collision triggers (if car flies offroad limit)
       const limitDist = TRACK_WIDTH / 2 - 1.2;
@@ -1230,6 +2548,7 @@ export default function ThreeGame({
         spawnSpark(car.pos);
         
         car.health = Math.max(car.health - 4, 0);
+        triggerCollisionFlash();
       }
 
       // Sync player 3D mesh Transform
@@ -1322,7 +2641,7 @@ export default function ThreeGame({
         if (!state.raceActive || ai.finished) return;
 
         // Progress AI position along track spline curve smoothly
-        const topAiSpeed = 0.045 * ai.speedFactor;
+        const topAiSpeed = 0.045 * ai.speedFactor * aiWeatherMult;
         
         // Braking slightly around sharp corners to make AI drive realistic curves
         const tangent = roadSpline.getTangentAt(ai.progress % 1.0).normalize();
@@ -1377,6 +2696,10 @@ export default function ThreeGame({
         
         if (targetCheckIdx === 0) {
           // Cross start/finish gate
+          const lapTime = state.time - car.lapStartTime;
+          car.lapTimes.push(lapTime);
+          car.lapStartTime = state.time;
+
           if (car.lap >= 3) {
             // Finished!
             car.finished = true;
@@ -1387,7 +2710,8 @@ export default function ThreeGame({
             
             // Trigger completion callback
             const reward = finalStandings === 1 ? 300 : finalStandings === 2 ? 180 : finalStandings === 3 ? 120 : 60;
-            onRaceFinished(finalStandings, state.time, reward);
+            const fastestLap = car.lapTimes.length > 0 ? Math.min(...car.lapTimes) : state.time / 3;
+            onRaceFinished(finalStandings, state.time, reward, fastestLap);
           } else {
             car.lap++;
             setCurrentLap(car.lap);
@@ -1395,11 +2719,50 @@ export default function ThreeGame({
         }
       }
 
+      // Smoothly interpolate remote players (LERP) in 3D
+      state.remotePlayers.forEach((p: any) => {
+        p.pos.lerp(p.targetPos, Math.min(1.0, dt * 10.0));
+        p.dir = THREE.MathUtils.lerp(p.dir, p.targetDir, Math.min(1.0, dt * 10.0));
+        if (p.meshGroup) {
+          p.meshGroup.position.copy(p.pos);
+          p.meshGroup.rotation.y = p.dir;
+          // Spin remote car wheels representing speed
+          p.meshGroup.children.forEach((w: any) => {
+            if (w instanceof THREE.Mesh && w.geometry instanceof THREE.CylinderGeometry) {
+              w.rotateX(dt * p.speed * 0.15);
+            }
+          });
+        }
+      });
+
+      // Broadcast our state to other players
+      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+        socketRef.current.send(JSON.stringify({
+          type: "update",
+          pos: { x: car.pos.x, y: car.pos.y, z: car.pos.z },
+          dir: car.dir,
+          speed: car.speed,
+          health: car.health,
+          lap: car.lap,
+          checkpoint: car.checkpoint,
+          finished: car.finished,
+          finishTime: car.finishTime,
+        }));
+      }
+
       // --- CALCULATE ACTIVE PLACEMENTS ---
       // Position calculation based on Lap progress, Checkpoint level, and distance to next checkpoint
+      const remoteRacersToSort = Array.from(state.remotePlayers.values() as any).map((p: any) => {
+        const nextCheck = (p.checkpoint + 1) % state.checkpoints.length;
+        const targetCheckPt = state.checkpoints[nextCheck];
+        const dist = targetCheckPt ? p.pos.distanceTo(targetCheckPt) : 0;
+        return { id: p.id, lap: p.lap, check: p.checkpoint, dist, finished: p.finished, time: p.finished ? 100 : 0 };
+      });
+
       const racersToSort = [
         { id: 'player', lap: car.lap, check: car.checkpoint, dist: car.pos.distanceTo(state.checkpoints[(car.checkpoint + 1) % state.checkpoints.length]), finished: car.finished, time: car.finishTime },
         ...state.aiCars.map((ai) => ({ id: ai.id, lap: ai.currentLap, check: ai.lastCheckpoint, dist: ai.pos.distanceTo(state.checkpoints[(ai.lastCheckpoint + 1) % state.checkpoints.length]), finished: ai.finished, time: ai.finishTime })),
+        ...remoteRacersToSort,
       ];
 
       racersToSort.sort((a, b) => {
@@ -1418,6 +2781,58 @@ export default function ThreeGame({
       // Map details to state HUD
       setSpeedKmh(Math.abs(Math.round(car.speed)));
       setNitroLevel(Math.round(car.nitro));
+      setFuel(Math.round(car.fuel));
+      setTireWear(Math.round(car.tireWear));
+      setTireTemp(Math.round(car.tireTemp));
+      setCarHealth(Math.round(car.health));
+
+      // Calculate realistic Gear and RPM
+      let gear = 1;
+      let gearMinSpeed = 0;
+      let gearMaxSpeed = 40;
+      const currentSpeedAbs = Math.abs(car.speed);
+      
+      if (currentSpeedAbs > 200) {
+        gear = 6;
+        gearMinSpeed = 200;
+        gearMaxSpeed = MAX_SPEED;
+      } else if (currentSpeedAbs > 145) {
+        gear = 5;
+        gearMinSpeed = 145;
+        gearMaxSpeed = 210;
+      } else if (currentSpeedAbs > 100) {
+        gear = 4;
+        gearMinSpeed = 100;
+        gearMaxSpeed = 155;
+      } else if (currentSpeedAbs > 65) {
+        gear = 3;
+        gearMinSpeed = 65;
+        gearMaxSpeed = 110;
+      } else if (currentSpeedAbs > 35) {
+        gear = 2;
+        gearMinSpeed = 35;
+        gearMaxSpeed = 70;
+      } else {
+        gear = 1;
+        gearMinSpeed = 0;
+        gearMaxSpeed = 40;
+      }
+      
+      setCurrentGear(gear);
+      
+      const speedRatioForGear = (currentSpeedAbs - gearMinSpeed) / Math.max(1, gearMaxSpeed - gearMinSpeed);
+      let calculatedRpm = 1000 + Math.max(0, speedRatioForGear * 7000);
+      if (keys.w && !car.isPitting) {
+        calculatedRpm += Math.sin(state.time * 45) * 80; // Needle vibration!
+      }
+      if (calculatedRpm > 8200) {
+        calculatedRpm = 8200 + Math.random() * 50; // Rev limiter bounce!
+      }
+      if (calculatedRpm < 1000) {
+        calculatedRpm = 1000;
+      }
+      
+      setRpm(Math.round(calculatedRpm));
 
       // Slowly recharge nitro
       if (!isBoosting && car.nitro < 100) {
@@ -1425,9 +2840,29 @@ export default function ThreeGame({
       }
 
       // Set participant distances for mini-map visual placements
+      const remoteParticipants = Array.from(state.remotePlayers.values() as any).map((p: any) => {
+        const nextCheck = (p.checkpoint + 1) % state.checkpoints.length;
+        const targetCheckPt = state.checkpoints[nextCheck];
+        const dist = targetCheckPt ? p.pos.distanceTo(targetCheckPt) : 0;
+        return {
+          id: p.id,
+          name: p.name,
+          carId: p.carId,
+          color: p.color,
+          isPlayer: false,
+          lap: p.lap,
+          currentCheckpoint: p.checkpoint,
+          distanceToNextCheckpoint: dist,
+          totalDistance: p.lap * 1000 + p.checkpoint * 100,
+          finished: p.finished,
+          speed: Math.abs(p.speed),
+        };
+      });
+
       const currentParticipants: RaceParticipant[] = [
         { id: 'player', name: 'You', carId: selectedCar.id, color: selectedCar.color, isPlayer: true, lap: car.lap, currentCheckpoint: car.checkpoint, distanceToNextCheckpoint: car.pos.distanceTo(state.checkpoints[(car.checkpoint + 1) % state.checkpoints.length]), totalDistance: car.lap * 1000 + car.checkpoint * 100, finished: car.finished, speed: car.speed },
         ...state.aiCars.map((ai) => ({ id: ai.id, name: ai.name, carId: 'ai', color: ai.color, isPlayer: false, lap: ai.currentLap, currentCheckpoint: ai.lastCheckpoint, distanceToNextCheckpoint: ai.pos.distanceTo(state.checkpoints[(ai.lastCheckpoint + 1) % state.checkpoints.length]), totalDistance: ai.currentLap * 1000 + ai.lastCheckpoint * 100, finished: ai.finished, speed: ai.speedFactor * 140 })),
+        ...remoteParticipants,
       ];
       setParticipants(currentParticipants);
 
@@ -1507,6 +2942,119 @@ export default function ThreeGame({
       {/* Three.js Canvas Element */}
       <canvas ref={canvasRef} className="w-full h-full flex-1 block" />
 
+      {/* Collision Red Flash Overlay */}
+      {collisionFlash && (
+        <div className="absolute inset-0 bg-red-600/35 pointer-events-none z-50 border-[10px] border-red-600 animate-pulse" />
+      )}
+
+      {/* Real-time Integrity & Damage Status Banner at Top-Center */}
+      <div className="absolute top-4 left-1/2 transform -translate-x-1/2 flex flex-col items-center gap-1.5 select-none pointer-events-none z-30">
+        <div className={`px-4 py-2 rounded-xl backdrop-blur-md border ${carHealth < 40 ? 'bg-rose-950/85 border-rose-500 shadow-[0_0_15px_rgba(239,68,68,0.4)] animate-pulse' : 'bg-slate-950/85 border-slate-800'} flex items-center gap-3 transition-all duration-300`}>
+          <span className="text-xs text-slate-400 font-bold uppercase tracking-wider">CAR INTEGRITY</span>
+          <div className="flex items-center gap-1">
+            {[...Array(5)].map((_, i) => (
+              <div
+                key={i}
+                className={`h-4 w-2 rounded-sm transition-all ${
+                  carHealth > i * 20
+                    ? carHealth < 40
+                      ? 'bg-rose-500 animate-pulse'
+                      : 'bg-emerald-400'
+                    : 'bg-slate-800'
+                }`}
+              />
+            ))}
+          </div>
+          <span className={`font-mono text-sm font-bold leading-none ${carHealth < 40 ? 'text-rose-400 font-black animate-pulse' : 'text-emerald-400'}`}>
+            {carHealth}%
+          </span>
+        </div>
+      </div>
+
+      {/* Real-time Multiplayer Chat & Reaction Panel */}
+      <div className="absolute top-20 left-4 w-80 max-h-72 bg-slate-950/80 backdrop-blur-md rounded-2xl border border-slate-800/80 flex flex-col p-3 z-30 select-none pointer-events-auto shadow-2xl">
+        <div className="flex justify-between items-center pb-2 border-b border-slate-800/60 mb-2">
+          <span className="text-[10px] text-emerald-400 font-extrabold tracking-widest uppercase flex items-center gap-1.5">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 inline-block animate-ping" />
+            LIVE RACING LOBBY
+          </span>
+          <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">
+            {participants.length} Active Players
+          </span>
+        </div>
+
+        {/* Chat Feed */}
+        <div className="flex-1 overflow-y-auto space-y-2 pr-1 scrollbar-thin scrollbar-thumb-slate-800 max-h-36">
+          {chatMessages.length === 0 ? (
+            <div className="text-[10px] text-slate-500 italic text-center py-4">No race logs yet. Type a message or send an emoji!</div>
+          ) : (
+            chatMessages.map((msg) => (
+              <div key={msg.id} className="text-xs break-all leading-relaxed">
+                <span className="font-extrabold mr-1.5" style={{ color: msg.sender === 'YOU' || msg.sender === localStorage.getItem('race_player_name') ? '#10b981' : '#38bdf8' }}>
+                  {msg.sender}:
+                </span>
+                <span className={msg.type === 'emoji' ? 'text-base font-bold' : 'text-slate-200'}>{msg.text}</span>
+              </div>
+            ))
+          )}
+        </div>
+
+        {/* Quick Emoji Reaction Palette */}
+        <div className="grid grid-cols-6 gap-1 mt-2.5 pb-2 border-b border-slate-800/40">
+          {['👍', '🔥', '😂', '👑', '😮', '💀'].map((emoji) => (
+            <button
+              key={emoji}
+              onClick={() => {
+                if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+                  socketRef.current.send(JSON.stringify({
+                    type: 'emoji',
+                    text: emoji,
+                    senderName: localStorage.getItem('race_player_name') || 'YOU',
+                  }));
+                }
+              }}
+              className="text-base hover:scale-125 transition-all duration-75 py-1 rounded-md bg-slate-900 border border-slate-800 hover:bg-slate-800 hover:border-slate-750 pointer-events-auto cursor-pointer flex items-center justify-center"
+            >
+              {emoji}
+            </button>
+          ))}
+        </div>
+
+        {/* Chat input box */}
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!chatInput.trim()) return;
+            if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+              socketRef.current.send(JSON.stringify({
+                type: 'chat',
+                text: chatInput,
+                senderName: localStorage.getItem('race_player_name') || 'YOU',
+              }));
+            }
+            setChatInput('');
+          }}
+          className="flex gap-2 mt-2 pointer-events-auto"
+        >
+          <input
+            type="text"
+            value={chatInput}
+            onChange={(e) => setChatInput(e.target.value)}
+            onFocus={() => setActiveInput(true)}
+            onBlur={() => setActiveInput(false)}
+            placeholder="Type a message..."
+            maxLength={60}
+            className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/80 focus:ring-1 focus:ring-emerald-500/30 font-sans"
+          />
+          <button
+            type="submit"
+            className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 px-3 py-1.5 rounded-xl text-xs font-extrabold tracking-wider transition-all cursor-pointer uppercase shrink-0 font-sans"
+          >
+            SEND
+          </button>
+        </form>
+      </div>
+
       {/* Countdown overlay */}
       {countdown !== null && (
         <div className="absolute inset-0 flex items-center justify-center bg-slate-950/20 backdrop-blur-xs select-none">
@@ -1546,46 +3094,270 @@ export default function ThreeGame({
         </div>
       </div>
 
-      {/* Speedometer, Nitro HUD indicators at the bottom */}
-      <div className="absolute bottom-4 left-4 right-4 flex justify-between items-end pointer-events-none select-none">
-        {/* Dynamic Speedometer */}
-        <div className="bg-slate-950/85 backdrop-blur-md p-4 rounded-2xl border border-slate-800 flex flex-col items-center min-w-[120px]">
-          <span className="text-4xl font-black text-slate-100 font-mono leading-none">{speedKmh}</span>
-          <span className="text-[10px] text-slate-500 font-bold tracking-widest uppercase mt-1">KM/H</span>
+      {/* Pit Stop Servicing Overlay */}
+      {isPitting && (
+        <div className="absolute inset-0 bg-slate-950/85 backdrop-blur-md flex flex-col items-center justify-center z-20 select-none pointer-events-auto">
+          <div className="bg-slate-900 border border-emerald-500/30 p-8 rounded-2xl shadow-2xl max-w-md w-full flex flex-col gap-6 items-center mx-4">
+            <div className="flex flex-col items-center gap-1.5 text-center">
+              <span className="text-[10px] text-emerald-400 font-bold tracking-widest uppercase">PIT CREW SERVICING</span>
+              <h3 className="text-2xl font-black text-white uppercase tracking-tight">Active Pit Stop</h3>
+              <p className="text-xs text-slate-400">Your vehicle is locked in the service bay. Restoring engine systems and mechanics...</p>
+            </div>
+
+            <div className="flex flex-col gap-4 w-full">
+              {/* Refueling Stage */}
+              <div className="flex flex-col gap-1.5">
+                <div className="flex justify-between items-center text-xs font-bold text-slate-400">
+                  <div className="flex items-center gap-2">
+                    <span className={pitServiceStatus === 'refueling' ? 'text-emerald-400 animate-pulse font-black' : (pitServiceStatus !== 'idle' && pitServiceStatus !== 'refueling') ? 'text-emerald-500' : 'text-slate-600'}>
+                      {pitServiceStatus === 'refueling' ? '⚡' : (pitServiceStatus !== 'idle' && pitServiceStatus !== 'refueling') ? '✓' : '○'}
+                    </span>
+                    <span>REFUELING ENERGY</span>
+                  </div>
+                  <span className="font-mono text-emerald-400">{fuel}%</span>
+                </div>
+                <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden border border-slate-900/40">
+                  <div className="h-full bg-emerald-500 transition-all duration-150" style={{ width: `${fuel}%` }} />
+                </div>
+              </div>
+
+              {/* Changing Tires Stage */}
+              <div className="flex flex-col gap-1.5">
+                <div className="flex justify-between items-center text-xs font-bold text-slate-400">
+                  <div className="flex items-center gap-2">
+                    <span className={pitServiceStatus === 'tire_change' ? 'text-emerald-400 animate-pulse font-black' : (pitServiceStatus === 'repair' || pitServiceStatus === 'done') ? 'text-emerald-500' : 'text-slate-600'}>
+                      {pitServiceStatus === 'tire_change' ? '⚙️' : (pitServiceStatus === 'repair' || pitServiceStatus === 'done') ? '✓' : '○'}
+                    </span>
+                    <span>MOUNTING RACING SLICKS</span>
+                  </div>
+                  <span className="font-mono text-emerald-400">{100 - tireWear}% Condition</span>
+                </div>
+                <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden border border-slate-900/40">
+                  <div className="h-full bg-emerald-500 transition-all duration-150" style={{ width: `${100 - tireWear}%` }} />
+                </div>
+              </div>
+
+              {/* Repairs Stage */}
+              <div className="flex flex-col gap-1.5">
+                <div className="flex justify-between items-center text-xs font-bold text-slate-400">
+                  <div className="flex items-center gap-2">
+                    <span className={pitServiceStatus === 'repair' ? 'text-emerald-400 animate-pulse font-black' : pitServiceStatus === 'done' ? 'text-emerald-500' : 'text-slate-600'}>
+                      {pitServiceStatus === 'repair' ? '🔧' : pitServiceStatus === 'done' ? '✓' : '○'}
+                    </span>
+                    <span>CARBON BODYWORK REPAIRS</span>
+                  </div>
+                  <span className="font-mono text-emerald-400">{carHealth}%</span>
+                </div>
+                <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden border border-slate-900/40">
+                  <div className="h-full bg-emerald-500 transition-all duration-150" style={{ width: `${carHealth}%` }} />
+                </div>
+              </div>
+            </div>
+
+            {pitServiceStatus === 'done' ? (
+              <div className="mt-2 text-center animate-bounce">
+                <span className="bg-emerald-500 text-slate-950 font-black text-lg px-6 py-2 rounded-xl tracking-wider shadow-lg shadow-emerald-500/20">
+                  GO GO GO!
+                </span>
+              </div>
+            ) : (
+              <div className="mt-2 text-slate-500 font-bold text-[10px] tracking-widest animate-pulse">
+                SERVICING VEHICLE... PLEASE WAIT
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Speedometer, RPM Cockpit DashboardHUD indicators at the bottom */}
+      <div className="absolute bottom-4 left-4 right-4 flex flex-col md:flex-row justify-between items-stretch md:items-end pointer-events-none select-none gap-4">
+        {/* Left Cockpit Dial Cluster (Speed & RPM Tachometer) */}
+        <div className="bg-slate-950/85 backdrop-blur-md p-4 rounded-2xl border border-slate-800/80 flex items-center gap-4 shadow-2xl min-w-[280px]">
+          {/* Circular SVG Tachometer (RPM) */}
+          <div className="relative w-20 h-20 shrink-0">
+            <svg className="w-full h-full transform -rotate-90">
+              {/* Background ring */}
+              <circle cx="40" cy="40" r="34" className="stroke-slate-800" strokeWidth="5.5" fill="transparent" />
+              {/* Dynamic RPM gauge */}
+              <circle
+                cx="40"
+                cy="40"
+                r="34"
+                className={`${rpm > 7200 ? 'stroke-rose-500 animate-pulse' : 'stroke-emerald-400'}`}
+                strokeWidth="5.5"
+                fill="transparent"
+                strokeDasharray={2 * Math.PI * 34}
+                strokeDashoffset={2 * Math.PI * 34 * (1 - rpm / 8200)}
+              />
+            </svg>
+            <div className="absolute inset-0 flex flex-col items-center justify-center">
+              <span className="text-[8px] text-slate-500 font-bold tracking-wider uppercase">GEAR</span>
+              <span className="text-xl font-black text-white font-mono leading-none">{currentGear}</span>
+              <span className="text-[7px] text-slate-500 font-semibold font-mono leading-none mt-0.5">{rpm}</span>
+            </div>
+          </div>
+
+          <div className="flex flex-col justify-center gap-0.5">
+            <span className="text-4xl font-black text-slate-100 font-mono leading-none">
+              {speedKmh}
+            </span>
+            <span className="text-[10px] text-slate-400 font-bold tracking-widest uppercase flex items-center gap-1.5">
+              <span>KM/H</span>
+              <span className="h-2 w-2 rounded-full bg-emerald-500 inline-block animate-ping" />
+            </span>
+          </div>
         </div>
 
         {/* Controls Tutorial Note */}
-        <div className="hidden lg:flex flex-col items-center bg-slate-950/60 backdrop-blur-md px-4 py-2.5 rounded-xl border border-slate-800 text-[10px] text-slate-400 font-semibold gap-1">
+        <div className="hidden xl:flex flex-col items-center justify-center bg-slate-950/60 backdrop-blur-md px-4 py-2.5 rounded-xl border border-slate-800/80 text-[10px] text-slate-400 font-semibold gap-1 shrink-0">
           <div><kbd className="bg-slate-800 px-1 py-0.5 rounded text-white text-[9px] font-mono mr-1">W A S D</kbd> Drive & Steering</div>
           <div><kbd className="bg-slate-800 px-1 py-0.5 rounded text-white text-[9px] font-mono mr-1">Shift</kbd> Nitro Boost | <kbd className="bg-slate-800 px-1 py-0.5 rounded text-white text-[9px] font-mono mr-1">Space</kbd> Handbrake Drift</div>
+          <div className="text-emerald-400 font-bold mt-1 uppercase text-[8px] tracking-wider animate-pulse">🚗 Stop inside the green Pit Box near starting arch to change tires, refuel & repair!</div>
         </div>
 
-        {/* Nitro bar gauge */}
-        <div className="bg-slate-950/85 backdrop-blur-md p-4 rounded-2xl border border-slate-800 flex flex-col gap-2 min-w-[180px]">
-          <div className="flex justify-between items-center text-[10px] font-bold text-slate-400">
-            <span>NITRO SYSTEM</span>
-            <span className="text-emerald-400 font-mono">{nitroLevel}%</span>
+        {/* Right Cockpit Cluster (Fuel, Damage, Tire Slicks thermal monitoring) */}
+        <div className="bg-slate-950/85 backdrop-blur-md p-4 rounded-2xl border border-slate-800/80 flex flex-col md:flex-row gap-4 shadow-2xl min-w-[320px]">
+          {/* Diagnostic Stats */}
+          <div className="flex-1 flex flex-col gap-2 justify-center">
+            {/* Nitro Bar */}
+            <div className="flex flex-col gap-1">
+              <div className="flex justify-between items-center text-[9px] font-bold text-slate-400">
+                <span>NITRO BOOST</span>
+                <span className="text-cyan-400 font-mono">{nitroLevel}%</span>
+              </div>
+              <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden border border-slate-900/40">
+                <div
+                  className="h-full bg-linear-to-r from-cyan-500 to-cyan-400 rounded-full transition-all duration-75"
+                  style={{ width: `${nitroLevel}%` }}
+                />
+              </div>
+            </div>
+
+            {/* Fuel Bar */}
+            <div className="flex flex-col gap-1">
+              <div className="flex justify-between items-center text-[9px] font-bold text-slate-400">
+                <span>FUEL CAPACITY</span>
+                <span className={`font-mono ${fuel < 25 ? 'text-rose-500 animate-pulse' : 'text-amber-400'}`}>
+                  {fuel}% {fuel < 25 && '(LOW)'}
+                </span>
+              </div>
+              <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden border border-slate-900/40">
+                <div
+                  className={`h-full rounded-full transition-all duration-150 ${fuel < 25 ? 'bg-rose-500 animate-pulse' : 'bg-amber-400'}`}
+                  style={{ width: `${fuel}%` }}
+                />
+              </div>
+            </div>
+
+            {/* Chassis Damage Bar */}
+            <div className="flex flex-col gap-1">
+              <div className="flex justify-between items-center text-[9px] font-bold text-slate-400">
+                <span>ENGINE CONDITION</span>
+                <span className={`font-mono ${carHealth < 40 ? 'text-rose-500 animate-pulse font-bold' : 'text-emerald-400'}`}>
+                  {carHealth}% {carHealth < 40 && '(DAMAGED)'}
+                </span>
+              </div>
+              <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden border border-slate-900/40">
+                <div
+                  className={`h-full rounded-full transition-all duration-150 ${carHealth < 40 ? 'bg-rose-500 animate-pulse' : 'bg-emerald-400'}`}
+                  style={{ width: `${carHealth}%` }}
+                />
+              </div>
+            </div>
           </div>
-          <div className="w-full bg-slate-800 h-2.5 rounded-full overflow-hidden border border-slate-900/40">
-            <div
-              className="h-full bg-linear-to-r from-cyan-500 to-emerald-400 rounded-full transition-all duration-75"
-              style={{ width: `${nitroLevel}%` }}
-            />
+
+          {/* Tires thermal schematic diagram */}
+          <div className="flex flex-col items-center justify-center shrink-0 border-l border-slate-800/80 pl-4">
+            <span className="text-[8px] text-slate-500 font-bold tracking-widest uppercase mb-1.5">Tire Telemetry</span>
+            <div className="grid grid-cols-2 gap-1 bg-slate-900/60 p-1 rounded-xl border border-slate-800/60">
+              {/* Front Left */}
+              <div className="flex flex-col items-center justify-center border border-slate-800 rounded bg-slate-950/80 p-1 w-11 h-11">
+                <span className="text-[7px] text-slate-500 font-bold">FL</span>
+                <span className={`text-[8px] font-bold ${tireTemp < 60 ? 'text-cyan-400' : tireTemp > 115 ? 'text-rose-500 animate-pulse' : 'text-emerald-400'}`}>
+                  {tireTemp}°C
+                </span>
+                <span className="text-[7px] text-slate-400 font-mono">{100 - tireWear}%</span>
+              </div>
+              {/* Front Right */}
+              <div className="flex flex-col items-center justify-center border border-slate-800 rounded bg-slate-950/80 p-1 w-11 h-11">
+                <span className="text-[7px] text-slate-500 font-bold">FR</span>
+                <span className={`text-[8px] font-bold ${tireTemp < 60 ? 'text-cyan-400' : tireTemp > 115 ? 'text-rose-500 animate-pulse' : 'text-emerald-400'}`}>
+                  {tireTemp}°C
+                </span>
+                <span className="text-[7px] text-slate-400 font-mono">{100 - tireWear}%</span>
+              </div>
+              {/* Rear Left */}
+              <div className="flex flex-col items-center justify-center border border-slate-800 rounded bg-slate-950/80 p-1 w-11 h-11">
+                <span className="text-[7px] text-slate-500 font-bold">RL</span>
+                <span className={`text-[8px] font-bold ${tireTemp < 60 ? 'text-cyan-400' : tireTemp > 115 ? 'text-rose-500 animate-pulse' : 'text-emerald-400'}`}>
+                  {tireTemp}°C
+                </span>
+                <span className="text-[7px] text-slate-400 font-mono">{100 - tireWear}%</span>
+              </div>
+              {/* Rear Right */}
+              <div className="flex flex-col items-center justify-center border border-slate-800 rounded bg-slate-950/80 p-1 w-11 h-11">
+                <span className="text-[7px] text-slate-500 font-bold">RR</span>
+                <span className={`text-[8px] font-bold ${tireTemp < 60 ? 'text-cyan-400' : tireTemp > 115 ? 'text-rose-500 animate-pulse' : 'text-emerald-400'}`}>
+                  {tireTemp}°C
+                </span>
+                <span className="text-[7px] text-slate-400 font-mono">{100 - tireWear}%</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Weather Selector Panel */}
+      <div className="absolute top-18 left-4 flex flex-col gap-2 pointer-events-auto select-none z-10">
+        <span className="text-[9px] text-slate-500 font-bold tracking-widest uppercase ml-1">Weather System</span>
+        <div className="flex bg-slate-950/85 backdrop-blur-md p-1 rounded-xl border border-slate-800 flex-col md:flex-row gap-1">
+          {([
+            { id: 'clear', label: '☀️ Clear', color: 'hover:text-amber-400', activeBg: 'bg-amber-500/20 text-amber-300 border-amber-500/30' },
+            { id: 'rain', label: '🌧️ Rain', color: 'hover:text-blue-400', activeBg: 'bg-blue-500/20 text-blue-300 border-blue-500/30' },
+            { id: 'snow', label: '❄️ Snow', color: 'hover:text-cyan-400', activeBg: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30' },
+            { id: 'fog', label: '🌫️ Fog', color: 'hover:text-slate-300', activeBg: 'bg-slate-300/20 text-slate-200 border-slate-400/30' }
+          ] as const).map((wOption) => (
+            <button
+              key={wOption.id}
+              onClick={() => handleWeatherChange(wOption.id)}
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all border cursor-pointer ${
+                weather === wOption.id
+                  ? `${wOption.activeBg} border-solid`
+                  : `text-slate-400 ${wOption.color} border-transparent hover:bg-slate-900/60`
+              }`}
+            >
+              {wOption.label}
+            </button>
+          ))}
+        </div>
+        {/* Weather Effect telemetry read-out */}
+        <div className="bg-slate-950/75 backdrop-blur-md px-3 py-1.5 rounded-xl border border-slate-800/60 text-[9px] font-mono flex flex-col gap-0.5 text-slate-400">
+          <div className="flex justify-between gap-4">
+            <span>Tire Grip:</span>
+            <span className={`font-bold ${weather === 'clear' ? 'text-emerald-400' : weather === 'fog' ? 'text-amber-400' : 'text-rose-400'}`}>
+              {weather === 'clear' ? '100%' : weather === 'fog' ? '92%' : weather === 'rain' ? '78%' : '58%'}
+            </span>
+          </div>
+          <div className="flex justify-between gap-4">
+            <span>Traction Power:</span>
+            <span className={`font-bold ${weather === 'clear' ? 'text-emerald-400' : weather === 'fog' ? 'text-emerald-400' : 'text-amber-400'}`}>
+              {weather === 'clear' ? '100%' : weather === 'fog' ? '98%' : weather === 'rain' ? '94%' : '82%'}
+            </span>
           </div>
         </div>
       </div>
 
       {/* Floating Control buttons (Camera & Exit/Pause) */}
-      <div className="absolute top-18 right-4 flex flex-col gap-2 pointer-events-auto">
+      <div className="absolute top-18 right-4 flex flex-col gap-2 pointer-events-auto z-10">
         <button
           onClick={cycleCamera}
-          className="bg-slate-950/80 hover:bg-slate-800 text-slate-300 hover:text-white p-2.5 rounded-xl border border-slate-800 transition-all font-semibold text-xs flex items-center gap-2 shadow-lg active:scale-95"
+          className="bg-slate-950/80 hover:bg-slate-800 text-slate-300 hover:text-white p-2.5 rounded-xl border border-slate-800 transition-all font-semibold text-xs flex items-center gap-2 shadow-lg active:scale-95 cursor-pointer"
         >
           <RotateCcw className="w-4 h-4 text-emerald-400 rotate-45" /> Cam ({cameraMode === 'thirdPerson' ? 'Rear' : cameraMode === 'hood' ? 'Hood' : 'Cockpit'})
         </button>
         <button
           onClick={onExit}
-          className="bg-slate-950/80 hover:bg-red-950 text-slate-300 hover:text-red-300 p-2.5 rounded-xl border border-slate-800 transition-all font-semibold text-xs flex items-center justify-center shadow-lg active:scale-95"
+          className="bg-slate-950/80 hover:bg-red-950 text-slate-300 hover:text-red-300 p-2.5 rounded-xl border border-slate-800 transition-all font-semibold text-xs flex items-center justify-center shadow-lg active:scale-95 cursor-pointer"
         >
           Exit Race
         </button>

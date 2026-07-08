@@ -3,6 +3,9 @@ import { Play, Shield, Settings, Volume2, VolumeX, RotateCcw, Award, Check, Hard
 import { Track, Car, CarUpgrades, LeaderboardEntry } from './types';
 import ThreeGame from './components/ThreeGame';
 import UnityExporter from './components/UnityExporter';
+import Track3DPreview from './components/Track3DPreview';
+import ParticleExplosion from './components/ParticleExplosion';
+import TrackLeaderboard from './components/TrackLeaderboard';
 import { motion, AnimatePresence } from 'motion/react';
 
 // Constant Tracks List
@@ -39,6 +42,28 @@ const TRACKS: Track[] = [
     baseReward: 250,
     skyColor: '#082f49',
     groundColor: '#020617'
+  },
+  {
+    id: 'track_volcano',
+    name: 'Volcanic Rim',
+    description: 'A high-stakes volcanic ridge loop with glowing lava pools, obsidian rock pillars, and dense ash skies.',
+    color: '#f97316', // orange
+    length: 1500,
+    difficulty: 'Medium',
+    baseReward: 210,
+    skyColor: '#1e0505',
+    groundColor: '#100101'
+  },
+  {
+    id: 'track_cosmic',
+    name: 'Cosmic Drift',
+    description: 'An outer space circuit tracing a starry meteor ring, featuring floating crystal pillars and beautiful galactic views.',
+    color: '#a855f7', // purple/violet
+    length: 1800,
+    difficulty: 'Hard',
+    baseReward: 300,
+    skyColor: '#070212',
+    groundColor: '#04010a'
   }
 ];
 
@@ -144,6 +169,7 @@ export default function App() {
   const [activeScreen, setActiveScreen] = useState<'menu' | 'garage' | 'settings' | 'race' | 'unity-export'>('menu');
   const [selectedTrackId, setSelectedTrackId] = useState<string>('track_city');
   const [selectedCarId, setSelectedCarId] = useState<string>('car_specter');
+  const [selectedWeather, setSelectedWeather] = useState<'clear' | 'rain' | 'snow' | 'fog'>('clear');
 
   // Player Progression state
   const [coins, setCoins] = useState<number>(1000); // Give slightly higher starting coins so they can immediately buy or upgrade some cars
@@ -176,6 +202,8 @@ export default function App() {
     track_city: 0,
     track_desert: 0,
     track_mountain: 0,
+    track_volcano: 0,
+    track_cosmic: 0,
   });
 
   // Settings state
@@ -192,6 +220,14 @@ export default function App() {
     isNewRecord: boolean;
   } | null>(null);
 
+  // Particle explosion trigger and styling state
+  const [buyTrigger, setBuyTrigger] = useState<number>(0);
+  const [boughtCarColor, setBoughtCarColor] = useState<string>('');
+
+  // Leaderboard states
+  const [playerName, setPlayerNameState] = useState<string>('YOU');
+  const [leaderboardUpdateTrigger, setLeaderboardUpdateTrigger] = useState<number>(0);
+
   // Save/Load hooks
   useEffect(() => {
     const savedCoins = localStorage.getItem('race_coins');
@@ -202,6 +238,7 @@ export default function App() {
     const savedDifficulty = localStorage.getItem('race_difficulty');
     const savedAudio = localStorage.getItem('race_audio');
     const savedVol = localStorage.getItem('race_volume');
+    const savedPlayerName = localStorage.getItem('race_player_name');
 
     if (savedCoins) setCoins(parseInt(savedCoins));
     if (savedUnlocked) setUnlockedCarIds(JSON.parse(savedUnlocked));
@@ -211,6 +248,7 @@ export default function App() {
     if (savedDifficulty) setDifficulty(savedDifficulty as 'easy' | 'medium' | 'hard');
     if (savedAudio) setAudioEnabled(savedAudio === 'true');
     if (savedVol) setVolume(parseFloat(savedVol));
+    if (savedPlayerName) setPlayerNameState(savedPlayerName);
   }, []);
 
   const saveProgression = (
@@ -225,6 +263,32 @@ export default function App() {
     localStorage.setItem('race_upgrades', JSON.stringify(newUpgrades));
     localStorage.setItem('race_best_times', JSON.stringify(newRecords));
     localStorage.setItem('race_customizations', JSON.stringify(newCustoms));
+  };
+
+  const updatePlayerName = (name: string) => {
+    const cleanName = name.slice(0, 16) || 'YOU';
+    setPlayerNameState(cleanName);
+    localStorage.setItem('race_player_name', cleanName);
+
+    // Sync current name change across all active leaderboard collections
+    TRACKS.forEach((track) => {
+      try {
+        const stored = localStorage.getItem(`race_leaderboard_v1_${track.id}`);
+        if (stored) {
+          const list = JSON.parse(stored);
+          const updatedList = list.map((entry: any) => {
+            if (entry.isPlayer) {
+              return { ...entry, playerName: cleanName };
+            }
+            return entry;
+          });
+          localStorage.setItem(`race_leaderboard_v1_${track.id}`, JSON.stringify(updatedList));
+        }
+      } catch (e) {
+        console.error('Error updating name in stored leaderboards', e);
+      }
+    });
+    setLeaderboardUpdateTrigger((prev) => prev + 1);
   };
 
   const updateCustomization = (carId: string, fields: Partial<typeof carCustomizations[string]>) => {
@@ -268,6 +332,9 @@ export default function App() {
       setUnlockedCarIds(nextUnlocked);
       setSelectedCarId(car.id);
       saveProgression(nextCoins, nextUnlocked, carUpgrades, bestTimes);
+      // Trigger canvas particle explosion
+      setBoughtCarColor(car.color);
+      setBuyTrigger((prev) => prev + 1);
     }
   };
 
@@ -276,6 +343,8 @@ export default function App() {
     localStorage.clear();
     setCoins(1000);
     setUnlockedCarIds(['car_specter']);
+    setPlayerNameState('YOU');
+    setLeaderboardUpdateTrigger((prev) => prev + 1);
     setCarUpgrades({
       car_specter: { engine: 1, tires: 1, brakes: 1, nitro: 1 },
       car_rebel: { engine: 1, tires: 1, brakes: 1, nitro: 1 },
@@ -298,6 +367,8 @@ export default function App() {
       track_city: 0,
       track_desert: 0,
       track_mountain: 0,
+      track_volcano: 0,
+      track_cosmic: 0,
     });
     setDifficulty('easy');
     setAudioEnabled(true);
@@ -306,7 +377,7 @@ export default function App() {
   };
 
   // Completion stats calculation after a race finishes
-  const handleRaceFinish = (standing: number, time: number, rewardCoins: number) => {
+  const handleRaceFinish = (standing: number, time: number, rewardCoins: number, fastestLap?: number) => {
     const trackId = selectedTrackId;
     const prevBest = bestTimes[trackId] || 0;
     const isNewRecord = prevBest === 0 || time < prevBest;
@@ -316,6 +387,51 @@ export default function App() {
       ...bestTimes,
       [trackId]: isNewRecord ? time : prevBest
     };
+
+    // Calculate player's fastest lap time
+    const calculatedLapTime = fastestLap && fastestLap > 0 ? fastestLap : (time / 3);
+
+    // Save/Update player record on the specific track's leaderboard
+    try {
+      let playerLeaderboard: any[] = [];
+      const stored = localStorage.getItem(`race_leaderboard_v1_${trackId}`);
+      if (stored) {
+        playerLeaderboard = JSON.parse(stored);
+      }
+
+      const storedPlayerName = localStorage.getItem('race_player_name') || playerName || 'YOU';
+      const existingPlayerIndex = playerLeaderboard.findIndex(
+        (entry) => entry.playerName === storedPlayerName || entry.isPlayer
+      );
+
+      if (existingPlayerIndex !== -1) {
+        const existingEntry = playerLeaderboard[existingPlayerIndex];
+        if (calculatedLapTime < existingEntry.time) {
+          playerLeaderboard[existingPlayerIndex] = {
+            trackId,
+            carName: activeCar.name,
+            playerName: storedPlayerName,
+            time: calculatedLapTime,
+            date: new Date().toLocaleDateString(),
+            isPlayer: true
+          };
+        }
+      } else {
+        playerLeaderboard.push({
+          trackId,
+          carName: activeCar.name,
+          playerName: storedPlayerName,
+          time: calculatedLapTime,
+          date: new Date().toLocaleDateString(),
+          isPlayer: true
+        });
+      }
+
+      localStorage.setItem(`race_leaderboard_v1_${trackId}`, JSON.stringify(playerLeaderboard));
+      setLeaderboardUpdateTrigger((prev) => prev + 1);
+    } catch (e) {
+      console.error('Error updating leaderboard on race finish', e);
+    }
 
     setCoins(nextCoins);
     setBestTimes(nextBestTimes);
@@ -337,6 +453,9 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans select-none antialiased">
+      {/* Particle Celebration Canvas */}
+      <ParticleExplosion trigger={buyTrigger} accentColor={boughtCarColor} />
+
       {/* Visual background lines */}
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-slate-900/40 via-slate-950 to-slate-950 pointer-events-none z-0" />
 
@@ -433,6 +552,7 @@ export default function App() {
               difficulty={difficulty}
               audioEnabled={audioEnabled}
               volume={volume}
+              initialWeather={selectedWeather}
               onRaceFinished={handleRaceFinish}
               onExit={() => setActiveScreen('menu')}
             />
@@ -548,74 +668,94 @@ export default function App() {
               </div>
             </div>
 
-            {/* Tracks Card Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              {TRACKS.map((track) => {
-                const isSelected = selectedTrackId === track.id;
-                const personalBest = bestTimes[track.id] || 0;
+            {/* Split Layout: Tracks Selection + Interactive 3D Preview */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+              {/* Left Side: Track Cards Grid */}
+              <div className="lg:col-span-8 grid grid-cols-1 md:grid-cols-3 lg:grid-cols-2 xl:grid-cols-3 gap-6">
+                {TRACKS.map((track) => {
+                  const isSelected = selectedTrackId === track.id;
+                  const personalBest = bestTimes[track.id] || 0;
 
-                return (
-                  <div
-                    key={track.id}
-                    onClick={() => setSelectedTrackId(track.id)}
-                    className={`group bg-slate-900 border rounded-2xl overflow-hidden transition-all duration-300 flex flex-col cursor-pointer ${
-                      isSelected
-                        ? 'border-emerald-500 shadow-lg shadow-emerald-500/5 -translate-y-1'
-                        : 'border-slate-800/80 hover:border-slate-700/80'
-                    }`}
-                  >
-                    {/* Visual representative track banner */}
+                  return (
                     <div
-                      className="h-32 flex items-center justify-center relative bg-slate-950 overflow-hidden"
-                      style={{ borderBottom: `2.5px solid ${track.color}` }}
+                      key={track.id}
+                      onClick={() => setSelectedTrackId(track.id)}
+                      className={`group bg-slate-900 border rounded-2xl overflow-hidden transition-all duration-300 flex flex-col cursor-pointer ${
+                        isSelected
+                          ? 'border-emerald-500 shadow-lg shadow-emerald-500/5 -translate-y-1'
+                          : 'border-slate-800/80 hover:border-slate-700/80'
+                      }`}
                     >
-                      <div className="absolute inset-0 bg-slate-950/20" />
-                      {/* Stylized road vector graphic */}
-                      <svg viewBox="0 0 100 40" className="w-2/3 opacity-30 group-hover:scale-110 transition-transform duration-500">
-                        <path
-                          d={track.id === 'track_city' ? "M10 20 H90 V30 H10 Z" : track.id === 'track_desert' ? "M10 20 Q50 40, 90 20 T10 20" : "M10 10 Q30 30, 50 10 T90 30"}
-                          fill="none"
-                          stroke={track.color}
-                          strokeWidth="2.5"
-                        />
-                      </svg>
-                      {/* Difficulty overlay pill */}
-                      <span className="absolute top-3 right-3 text-[10px] font-black uppercase tracking-wider px-2.5 py-1 rounded bg-slate-900/90 border border-slate-800 text-slate-300">
-                        {track.difficulty}
-                      </span>
-                    </div>
-
-                    {/* Content */}
-                    <div className="p-6 flex-1 flex flex-col justify-between">
-                      <div>
-                        <h3 className="text-lg font-bold text-slate-100 group-hover:text-emerald-400 transition-colors">{track.name}</h3>
-                        <p className="text-slate-400 text-xs mt-2 leading-relaxed">{track.description}</p>
+                      {/* Visual representative track banner */}
+                      <div
+                        className="h-32 flex items-center justify-center relative bg-slate-950 overflow-hidden"
+                        style={{ borderBottom: `2.5px solid ${track.color}` }}
+                      >
+                        <div className="absolute inset-0 bg-slate-950/20" />
+                        {/* Stylized road vector graphic */}
+                        <svg viewBox="0 0 100 40" className="w-2/3 opacity-30 group-hover:scale-110 transition-transform duration-500">
+                          <path
+                            d={
+                              track.id === 'track_city' ? "M10 20 H90 V30 H10 Z" :
+                              track.id === 'track_desert' ? "M10 20 Q50 40, 90 20 T10 20" :
+                              track.id === 'track_volcano' ? "M10 30 Q50 0, 90 30 T10 30" :
+                              track.id === 'track_cosmic' ? "M10 20 Q50 -10, 90 20 T10 20 Z" :
+                              "M10 10 Q30 30, 50 10 T90 30"
+                            }
+                            fill="none"
+                            stroke={track.color}
+                            strokeWidth="2.5"
+                          />
+                        </svg>
+                        {/* Difficulty overlay pill */}
+                        <span className="absolute top-3 right-3 text-[10px] font-black uppercase tracking-wider px-2.5 py-1 rounded bg-slate-900/90 border border-slate-800 text-slate-300">
+                          {track.difficulty}
+                        </span>
                       </div>
 
-                      <div className="border-t border-slate-800/60 mt-5 pt-4 flex flex-col gap-2 text-xs">
-                        <div className="flex justify-between text-slate-500">
-                          <span>Circuit Length:</span>
-                          <span className="font-mono text-slate-300 font-bold">{track.length} M</span>
+                      {/* Content */}
+                      <div className="p-6 flex-1 flex flex-col justify-between">
+                        <div>
+                          <h3 className="text-lg font-bold text-slate-100 group-hover:text-emerald-400 transition-colors">{track.name}</h3>
+                          <p className="text-slate-400 text-xs mt-2 leading-relaxed">{track.description}</p>
                         </div>
-                        <div className="flex justify-between text-slate-500">
-                          <span>Lap Count:</span>
-                          <span className="font-mono text-slate-300 font-bold">3 Laps</span>
-                        </div>
-                        <div className="flex justify-between text-slate-500">
-                          <span>Personal Best:</span>
-                          <span className="font-mono text-emerald-400 font-bold">
-                            {personalBest > 0 ? `${Math.floor(personalBest / 60)}:${(personalBest % 60).toFixed(2).padStart(5, '0')}` : 'No Time Rec'}
-                          </span>
+
+                        <div className="border-t border-slate-800/60 mt-5 pt-4 flex flex-col gap-2 text-xs">
+                          <div className="flex justify-between text-slate-500">
+                            <span>Circuit Length:</span>
+                            <span className="font-mono text-slate-300 font-bold">{track.length} M</span>
+                          </div>
+                          <div className="flex justify-between text-slate-500">
+                            <span>Lap Count:</span>
+                            <span className="font-mono text-slate-300 font-bold">3 Laps</span>
+                          </div>
+                          <div className="flex justify-between text-slate-500">
+                            <span>Personal Best:</span>
+                            <span className="font-mono text-emerald-400 font-bold">
+                              {personalBest > 0 ? `${Math.floor(personalBest / 60)}:${(personalBest % 60).toFixed(2).padStart(5, '0')}` : 'No Time Rec'}
+                            </span>
+                          </div>
                         </div>
                       </div>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
+
+              {/* Right Side: Interactive 3D Map Preview & Speed Records Leaderboard */}
+              <div className="lg:col-span-4 flex flex-col gap-6">
+                <Track3DPreview selectedTrackId={selectedTrackId} difficulty={difficulty} />
+                <TrackLeaderboard
+                  selectedTrackId={selectedTrackId}
+                  bestTimes={bestTimes}
+                  tracks={TRACKS}
+                  triggerUpdate={leaderboardUpdateTrigger}
+                />
+              </div>
             </div>
 
             {/* Start Driving Call to action */}
-            <div className="flex flex-col md:flex-row items-center justify-between p-6 bg-slate-900 border border-slate-800/80 rounded-2xl gap-4 shadow-md">
+            <div className="flex flex-col lg:flex-row items-center justify-between p-6 bg-slate-900 border border-slate-800/80 rounded-2xl gap-6 shadow-md">
               <div className="flex items-center gap-4">
                 <div
                   className="w-12 h-12 rounded-xl flex items-center justify-center shrink-0 border border-slate-800/80 text-lg font-bold"
@@ -629,16 +769,41 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="flex gap-3 w-full md:w-auto">
+              {/* Pre-race Weather Selector */}
+              <div className="flex flex-col gap-1.5 shrink-0 items-center lg:items-start">
+                <span className="text-[10px] text-slate-500 font-bold tracking-widest uppercase">Select Race Weather</span>
+                <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800">
+                  {([
+                    { id: 'clear', label: '☀️ Clear' },
+                    { id: 'rain', label: '🌧️ Rain' },
+                    { id: 'snow', label: '❄️ Snow' },
+                    { id: 'fog', label: '🌫️ Fog' }
+                  ] as const).map((wOption) => (
+                    <button
+                      key={wOption.id}
+                      onClick={() => setSelectedWeather(wOption.id)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                        selectedWeather === wOption.id
+                          ? 'bg-emerald-500 text-slate-950 shadow font-black'
+                          : 'text-slate-500 hover:text-slate-300'
+                      }`}
+                    >
+                      {wOption.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex gap-3 w-full lg:w-auto">
                 <button
                   onClick={() => setActiveScreen('garage')}
-                  className="w-full md:w-auto px-5 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-sm transition-all active:scale-95 text-center"
+                  className="w-full lg:w-auto px-5 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-sm transition-all active:scale-95 text-center cursor-pointer"
                 >
                   Tune in Garage
                 </button>
                 <button
                   onClick={() => setActiveScreen('race')}
-                  className="w-full md:w-auto px-8 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-sm transition-all shadow-lg shadow-emerald-500/10 flex items-center justify-center gap-2 active:scale-95 cursor-pointer"
+                  className="w-full lg:w-auto px-8 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-sm transition-all shadow-lg shadow-emerald-500/10 flex items-center justify-center gap-2 active:scale-95 cursor-pointer"
                 >
                   <Play className="w-4.5 h-4.5 fill-slate-950" /> Start Race
                 </button>
@@ -1181,6 +1346,28 @@ export default function App() {
               </p>
 
               <div className="space-y-6">
+                {/* Driver Profile Nickname */}
+                <div className="flex flex-col gap-3 p-4 bg-slate-950 rounded-xl border border-slate-800">
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-sm font-bold text-slate-300 flex items-center gap-2">
+                      👤 Driver Profile Name
+                    </label>
+                    <p className="text-[11px] text-slate-500 font-medium">
+                      Customize your name displayed on the speed record leaderboards.
+                    </p>
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={playerName === 'YOU' ? '' : playerName}
+                      maxLength={16}
+                      onChange={(e) => updatePlayerName(e.target.value || 'YOU')}
+                      placeholder="Enter Driver Name"
+                      className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-sm text-slate-100 font-bold focus:outline-none focus:border-emerald-500 transition-all font-mono"
+                    />
+                  </div>
+                </div>
+
                 {/* Audio parameters */}
                 <div className="flex flex-col gap-3 p-4 bg-slate-950 rounded-xl border border-slate-800">
                   <div className="flex items-center justify-between">
