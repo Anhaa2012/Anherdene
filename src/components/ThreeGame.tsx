@@ -256,6 +256,7 @@ export default function ThreeGame({
       vel: new THREE.Vector3(0, 0, 0),
       dir: 0, // Radians rotation around Y
       speed: 0,
+      steeringAngle: 0,
       driftAngle: 0,
       isDrifting: false,
       nitro: 100, // percentage
@@ -2351,16 +2352,6 @@ export default function ThreeGame({
           car.tireTemp = THREE.MathUtils.lerp(car.tireTemp, 90, dt * 4); // Cool or warm towards ideal temp
           if (Math.floor(state.time * 4) % 2 === 0) playPneumaticGunSound();
           if (car.tireWear <= 0) {
-            car.pitStatus = 'repair';
-            setPitServiceStatus('repair');
-          }
-        } else if (car.pitStatus === 'repair') {
-          car.health = Math.min(car.health + dt * 38, 100);
-          if (Math.floor(state.time * 10) % 2 === 0) {
-            playWeldingSparkSound();
-            spawnSpark(car.pos.clone().add(new THREE.Vector3((Math.random() - 0.5) * 2.5, 0.4, (Math.random() - 0.5) * 4)));
-          }
-          if (car.health >= 100) {
             car.pitStatus = 'done';
             setPitServiceStatus('done');
           }
@@ -2433,18 +2424,26 @@ export default function ThreeGame({
         if (keys.d) steeringInput = -1;
       }
 
-      // Steering Wheel Visual articulation
+      // Smoothly interpolate the steering angle of the front wheels
+      const targetSteering = steeringInput * 0.45; // Max lock angle is 0.45 radians (approx 26 degrees)
+      const steeringLerpSpeed = 8.0; // Responsive speed of steering response
+      car.steeringAngle = THREE.MathUtils.lerp(car.steeringAngle ?? 0, targetSteering, dt * steeringLerpSpeed);
+
+      // Only the front wheels steer left/right based on user input (via steeringAngle)
       if (frontSteerGroups[0] && frontSteerGroups[1]) {
-        frontSteerGroups[0].rotation.y = steeringInput * 0.45;
-        frontSteerGroups[1].rotation.y = steeringInput * 0.45;
+        frontSteerGroups[0].rotation.y = car.steeringAngle;
+        frontSteerGroups[1].rotation.y = car.steeringAngle;
       }
 
-      car.dir += steeringInput * turnPower * Math.min(car.speed / 12, 1);
+      // The car chassis follows that steering
+      // The heading (car.dir) changes smoothly driven by the actual steering angle of the front wheels and speed
+      const directionFactor = Math.sign(car.speed);
+      car.dir += car.steeringAngle * turnPower * Math.min(Math.abs(car.speed) / 12, 1) * 2.22 * directionFactor;
 
       // 3. Throttle Motor Power / Brake Torques (affected by damage and fuel levels)
       let isBoosting = false;
       
-      const healthPenalty = 0.45 + 0.55 * (car.health / 100); // 45% speed at 0% health
+      const healthPenalty = 1.0; // Engine condition is always perfect!
       const isOutofFuel = car.fuel <= 0;
       let topCapSpeed = MAX_SPEED * speedWeatherMult * healthPenalty;
       let currentAccel = ACCELERATION * accelWeatherMult * healthPenalty;
@@ -2547,7 +2546,7 @@ export default function ThreeGame({
         playCrashSound();
         spawnSpark(car.pos);
         
-        car.health = Math.max(car.health - 4, 0);
+        car.health = 100;
         triggerCollisionFlash();
       }
 
@@ -2664,8 +2663,10 @@ export default function ThreeGame({
         aiGroups[idx].position.copy(ai.pos);
         aiGroups[idx].lookAt(nextPos);
 
-        // Spin AI wheels
-        aiWheelsList[idx].forEach((w) => w.rotateX(dt * 15));
+        // Spin AI wheels synchronized with their speed (converted from spline progress to linear units)
+        const aiSpeedLinear = topAiSpeed * bendBrake * 1000;
+        const aiRotDelta = aiSpeedLinear * dt * 0.5;
+        aiWheelsList[idx].forEach((w) => w.rotateX(aiRotDelta));
 
         // Checkpoint verification for AI
         const checkIdx = ai.lastCheckpoint;
@@ -2729,7 +2730,7 @@ export default function ThreeGame({
           // Spin remote car wheels representing speed
           p.meshGroup.children.forEach((w: any) => {
             if (w instanceof THREE.Mesh && w.geometry instanceof THREE.CylinderGeometry) {
-              w.rotateX(dt * p.speed * 0.15);
+              w.rotateX(dt * p.speed * 0.5);
             }
           });
         }
@@ -2947,29 +2948,6 @@ export default function ThreeGame({
         <div className="absolute inset-0 bg-red-600/35 pointer-events-none z-50 border-[10px] border-red-600 animate-pulse" />
       )}
 
-      {/* Real-time Integrity & Damage Status Banner at Top-Center */}
-      <div className="absolute top-4 left-1/2 transform -translate-x-1/2 flex flex-col items-center gap-1.5 select-none pointer-events-none z-30">
-        <div className={`px-4 py-2 rounded-xl backdrop-blur-md border ${carHealth < 40 ? 'bg-rose-950/85 border-rose-500 shadow-[0_0_15px_rgba(239,68,68,0.4)] animate-pulse' : 'bg-slate-950/85 border-slate-800'} flex items-center gap-3 transition-all duration-300`}>
-          <span className="text-xs text-slate-400 font-bold uppercase tracking-wider">CAR INTEGRITY</span>
-          <div className="flex items-center gap-1">
-            {[...Array(5)].map((_, i) => (
-              <div
-                key={i}
-                className={`h-4 w-2 rounded-sm transition-all ${
-                  carHealth > i * 20
-                    ? carHealth < 40
-                      ? 'bg-rose-500 animate-pulse'
-                      : 'bg-emerald-400'
-                    : 'bg-slate-800'
-                }`}
-              />
-            ))}
-          </div>
-          <span className={`font-mono text-sm font-bold leading-none ${carHealth < 40 ? 'text-rose-400 font-black animate-pulse' : 'text-emerald-400'}`}>
-            {carHealth}%
-          </span>
-        </div>
-      </div>
 
       {/* Real-time Multiplayer Chat & Reaction Panel */}
       <div className="absolute top-20 left-4 w-80 max-h-72 bg-slate-950/80 backdrop-blur-md rounded-2xl border border-slate-800/80 flex flex-col p-3 z-30 select-none pointer-events-auto shadow-2xl">
@@ -3137,21 +3115,7 @@ export default function ThreeGame({
                 </div>
               </div>
 
-              {/* Repairs Stage */}
-              <div className="flex flex-col gap-1.5">
-                <div className="flex justify-between items-center text-xs font-bold text-slate-400">
-                  <div className="flex items-center gap-2">
-                    <span className={pitServiceStatus === 'repair' ? 'text-emerald-400 animate-pulse font-black' : pitServiceStatus === 'done' ? 'text-emerald-500' : 'text-slate-600'}>
-                      {pitServiceStatus === 'repair' ? '🔧' : pitServiceStatus === 'done' ? '✓' : '○'}
-                    </span>
-                    <span>CARBON BODYWORK REPAIRS</span>
-                  </div>
-                  <span className="font-mono text-emerald-400">{carHealth}%</span>
-                </div>
-                <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden border border-slate-900/40">
-                  <div className="h-full bg-emerald-500 transition-all duration-150" style={{ width: `${carHealth}%` }} />
-                </div>
-              </div>
+
             </div>
 
             {pitServiceStatus === 'done' ? (
@@ -3249,21 +3213,7 @@ export default function ThreeGame({
               </div>
             </div>
 
-            {/* Chassis Damage Bar */}
-            <div className="flex flex-col gap-1">
-              <div className="flex justify-between items-center text-[9px] font-bold text-slate-400">
-                <span>ENGINE CONDITION</span>
-                <span className={`font-mono ${carHealth < 40 ? 'text-rose-500 animate-pulse font-bold' : 'text-emerald-400'}`}>
-                  {carHealth}% {carHealth < 40 && '(DAMAGED)'}
-                </span>
-              </div>
-              <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden border border-slate-900/40">
-                <div
-                  className={`h-full rounded-full transition-all duration-150 ${carHealth < 40 ? 'bg-rose-500 animate-pulse' : 'bg-emerald-400'}`}
-                  style={{ width: `${carHealth}%` }}
-                />
-              </div>
-            </div>
+
           </div>
 
           {/* Tires thermal schematic diagram */}
