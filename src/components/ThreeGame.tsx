@@ -134,17 +134,32 @@ function createRemotePlayerCarMesh(colorHex: string, name: string) {
   wheelGeo.rotateZ(Math.PI / 2);
   const wheelMat = new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.8 });
   const wheelOffsets = [
-    new THREE.Vector3(-1.15, 0.5, 1.4),
-    new THREE.Vector3(1.15, 0.5, 1.4),
-    new THREE.Vector3(-1.15, 0.5, -1.4),
-    new THREE.Vector3(1.15, 0.5, -1.4),
+    new THREE.Vector3(-1.15, 0.5, 1.4),  // FL
+    new THREE.Vector3(1.15, 0.5, 1.4),   // FR
+    new THREE.Vector3(-1.15, 0.5, -1.4), // RL
+    new THREE.Vector3(1.15, 0.5, -1.4),  // RR
   ];
-  wheelOffsets.forEach((offset) => {
+  
+  const wheels: THREE.Mesh[] = [];
+  const frontSteerGroups: THREE.Group[] = [];
+
+  wheelOffsets.forEach((offset, idx) => {
+    const wheelContainer = new THREE.Group();
+    wheelContainer.position.copy(offset);
+    remoteGroup.add(wheelContainer);
+
+    if (idx === 0 || idx === 1) {
+      frontSteerGroups.push(wheelContainer);
+    }
+
     const wMesh = new THREE.Mesh(wheelGeo, wheelMat);
-    wMesh.position.copy(offset);
     wMesh.castShadow = true;
-    remoteGroup.add(wMesh);
+    wheelContainer.add(wMesh);
+    wheels.push(wMesh);
   });
+
+  (remoteGroup as any).frontSteerGroups = frontSteerGroups;
+  (remoteGroup as any).wheels = wheels;
 
   return remoteGroup;
 }
@@ -153,7 +168,7 @@ interface ThreeGameProps {
   activeTrack: Track;
   selectedCar: Car;
   upgrades: CarUpgrades;
-  difficulty: 'easy' | 'medium' | 'hard';
+  difficulty: 'easy' | 'medium' | 'legend';
   audioEnabled: boolean;
   volume: number;
   initialWeather?: 'clear' | 'rain' | 'snow' | 'fog';
@@ -645,7 +660,7 @@ export default function ThreeGame({
     // Scale AI speed factors based on game difficulty settings
     let diffMult = 0.8;
     if (difficulty === 'medium') diffMult = 0.93;
-    if (difficulty === 'hard') diffMult = 1.05;
+    if (difficulty === 'legend') diffMult = 1.25;
 
     stateRef.current.aiCars[0].speedFactor = 0.78 * diffMult;
     stateRef.current.aiCars[1].speedFactor = 0.85 * diffMult;
@@ -1816,9 +1831,17 @@ export default function ThreeGame({
 
       // Wheels
       const aiWheels: THREE.Mesh[] = [];
-      wheelOffsets.forEach((offset) => {
+      const aiFrontSteerGroups: THREE.Group[] = [];
+      wheelOffsets.forEach((offset, oIdx) => {
+        const wheelContainer = new THREE.Group();
+        wheelContainer.position.set(offset.x, offset.y, offset.z);
+        g.add(wheelContainer);
+
+        if (oIdx === 0 || oIdx === 1) {
+          aiFrontSteerGroups.push(wheelContainer);
+        }
+
         const wMesh = new THREE.Mesh(wheelGeo, wheelMat);
-        wMesh.position.set(offset.x, offset.y, offset.z);
         wMesh.castShadow = true;
 
         // Simple realistic treads for AI
@@ -1862,10 +1885,11 @@ export default function ThreeGame({
         }
 
         wMesh.add(rimGroup);
-        g.add(wMesh);
+        wheelContainer.add(wMesh);
         aiWheels.push(wMesh);
       });
       aiWheelsList.push(aiWheels);
+      (g as any).frontSteerGroups = aiFrontSteerGroups;
 
       // Place AI slightly scattered on starting line grid
       const startingProgress = 0.985 - (idx * 0.01);
@@ -2640,7 +2664,7 @@ export default function ThreeGame({
         if (!state.raceActive || ai.finished) return;
 
         // Progress AI position along track spline curve smoothly
-        const topAiSpeed = 0.045 * ai.speedFactor * aiWeatherMult;
+        let topAiSpeed = 0.045 * ai.speedFactor * aiWeatherMult;
         
         // Braking slightly around sharp corners to make AI drive realistic curves
         const tangent = roadSpline.getTangentAt(ai.progress % 1.0).normalize();
@@ -2648,7 +2672,37 @@ export default function ThreeGame({
         const curveDelta = tangent.angleTo(lookAheadTangent);
         const bendBrake = curveDelta > 0.08 ? 0.65 : 1.0;
 
+        // In legend difficulty, AI gets high-octane nitro bursts on straight sections
+        const isAiBoosting = difficulty === 'legend' && bendBrake > 0.95 && (Math.floor(state.time / 1000) % 5 < 3);
+        if (isAiBoosting) {
+          topAiSpeed *= 1.20; // boost AI speed
+        }
+
         ai.progress += dt * topAiSpeed * bendBrake;
+
+        // Spawn beautiful blue nitro flame trails for AI when boosting
+        if (isAiBoosting) {
+          for (let pIdx = 0; pIdx < 2; pIdx++) {
+            const aiHeading = aiGroups[idx].rotation.y;
+            const backDir = new THREE.Vector3(Math.sin(aiHeading + Math.PI), 0, Math.cos(aiHeading + Math.PI)).normalize();
+            const rightDir = new THREE.Vector3(Math.cos(aiHeading), 0, -Math.sin(aiHeading)).normalize();
+            
+            const exhaustPos = ai.pos.clone()
+              .addScaledVector(backDir, 1.8) // Behind the car
+              .addScaledVector(rightDir, pIdx === 0 ? -0.4 : 0.4) // Left/Right dual exhaust offset
+              .add(new THREE.Vector3(0, 0.4, 0)); // Height
+              
+            const freeNp = nitroParticles.find((np) => !np.mesh.visible);
+            if (freeNp) {
+              freeNp.mesh.visible = true;
+              freeNp.mesh.position.copy(exhaustPos);
+              freeNp.mesh.scale.set(1.2, 1.2, 1.2);
+              freeNp.age = 0;
+              freeNp.maxAge = 6 + Math.random() * 4;
+              freeNp.vel.copy(backDir).multiplyScalar(12).add(new THREE.Vector3((Math.random() - 0.5) * 1.5, 0, (Math.random() - 0.5) * 1.5));
+            }
+          }
+        }
 
         const rawPos = roadSpline.getPointAt(ai.progress % 1.0);
         const upVec = new THREE.Vector3(0, 1, 0);
@@ -2662,6 +2716,24 @@ export default function ThreeGame({
         
         aiGroups[idx].position.copy(ai.pos);
         aiGroups[idx].lookAt(nextPos);
+
+        // Calculate visual steering for the AI car's front wheels based on curvature of the upcoming road segment
+        const currentYRot = aiGroups[idx].rotation.y;
+        const aheadTangent = roadSpline.getTangentAt((ai.progress + 0.012) % 1.0);
+        const targetYRot = Math.atan2(aheadTangent.x, aheadTangent.z);
+        
+        let steerAngle = targetYRot - currentYRot;
+        if (steerAngle > Math.PI) steerAngle -= Math.PI * 2;
+        if (steerAngle < -Math.PI) steerAngle += Math.PI * 2;
+        
+        const finalAiSteer = THREE.MathUtils.clamp(steerAngle * 4.5, -0.45, 0.45);
+        ai.steeringAngle = THREE.MathUtils.lerp(ai.steeringAngle ?? 0, finalAiSteer, Math.min(1.0, dt * 10.0));
+
+        if ((aiGroups[idx] as any).frontSteerGroups) {
+          (aiGroups[idx] as any).frontSteerGroups.forEach((sg: THREE.Group) => {
+            sg.rotation.y = ai.steeringAngle;
+          });
+        }
 
         // Spin AI wheels synchronized with their speed (converted from spline progress to linear units)
         const aiSpeedLinear = topAiSpeed * bendBrake * 1000;
@@ -2710,7 +2782,10 @@ export default function ThreeGame({
             const finalStandings = [...state.aiCars].filter((ai) => ai.finished && ai.finishTime < car.finishTime).length + 1;
             
             // Trigger completion callback
-            const reward = finalStandings === 1 ? 300 : finalStandings === 2 ? 180 : finalStandings === 3 ? 120 : 60;
+            let reward = finalStandings === 1 ? 300 : finalStandings === 2 ? 180 : finalStandings === 3 ? 120 : 60;
+            if (difficulty === 'legend') {
+              reward = Math.round(reward * 2.0); // Double rewards for legendary difficulty!
+            }
             const fastestLap = car.lapTimes.length > 0 ? Math.min(...car.lapTimes) : state.time / 3;
             onRaceFinished(finalStandings, state.time, reward, fastestLap);
           } else {
@@ -2722,17 +2797,44 @@ export default function ThreeGame({
 
       // Smoothly interpolate remote players (LERP) in 3D
       state.remotePlayers.forEach((p: any) => {
+        const lastDir = p.lastDir !== undefined ? p.lastDir : p.dir;
+        let turnRate = (p.dir - lastDir) / (dt || 0.016);
+        p.lastDir = p.dir;
+        
+        // Handle wrapping for turn rate
+        if (turnRate > Math.PI) turnRate -= Math.PI * 2;
+        if (turnRate < -Math.PI) turnRate += Math.PI * 2;
+
+        const targetSteer = THREE.MathUtils.clamp(turnRate * 0.45, -0.45, 0.45);
+        p.steeringAngle = THREE.MathUtils.lerp(p.steeringAngle ?? 0, targetSteer, Math.min(1.0, dt * 10.0));
+
         p.pos.lerp(p.targetPos, Math.min(1.0, dt * 10.0));
         p.dir = THREE.MathUtils.lerp(p.dir, p.targetDir, Math.min(1.0, dt * 10.0));
         if (p.meshGroup) {
           p.meshGroup.position.copy(p.pos);
           p.meshGroup.rotation.y = p.dir;
+          
+          // Steer remote car front wheels
+          if (p.meshGroup.frontSteerGroups) {
+            p.meshGroup.frontSteerGroups.forEach((sg: THREE.Group) => {
+              sg.rotation.y = p.steeringAngle;
+            });
+          }
+
           // Spin remote car wheels representing speed
-          p.meshGroup.children.forEach((w: any) => {
-            if (w instanceof THREE.Mesh && w.geometry instanceof THREE.CylinderGeometry) {
-              w.rotateX(dt * p.speed * 0.5);
-            }
-          });
+          if (p.meshGroup.wheels) {
+            const rotDelta = dt * p.speed * 0.5;
+            p.meshGroup.wheels.forEach((w: THREE.Mesh) => {
+              w.rotateX(rotDelta);
+            });
+          } else {
+            // Fallback for direct children
+            p.meshGroup.children.forEach((w: any) => {
+              if (w instanceof THREE.Mesh && w.geometry instanceof THREE.CylinderGeometry) {
+                w.rotateX(dt * p.speed * 0.5);
+              }
+            });
+          }
         }
       });
 
@@ -3043,6 +3145,25 @@ export default function ThreeGame({
         </div>
       )}
 
+      {/* Legend Difficulty Immersive FX overlays */}
+      {difficulty === 'legend' && (
+        <>
+          {/* Pulsing red-neon border representing the extreme high-stakes race */}
+          <div className="absolute inset-0 border-[6px] border-red-500/15 pointer-events-none rounded-2xl z-20 animate-pulse shadow-[inset_0_0_60px_rgba(239,68,68,0.25)]" />
+          
+          {/* Animated Top Legend Status Bar */}
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-slate-950/90 border border-red-500/40 px-4 py-1.5 rounded-full backdrop-blur-md flex items-center gap-2.5 z-20 shadow-lg shadow-red-500/5 select-none pointer-events-none">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-500 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-red-600"></span>
+            </span>
+            <span className="text-[10px] font-black tracking-widest text-red-400 uppercase font-sans">
+              LEGEND DIFFICULTY ACTIVE (2x COINS)
+            </span>
+          </div>
+        </>
+      )}
+
       {/* Standard Racing HUD Overlay */}
       <div className="absolute top-4 left-4 right-4 flex justify-between items-start pointer-events-none select-none">
         {/* Race info panel (Laps & Placements) */}
@@ -3214,45 +3335,6 @@ export default function ThreeGame({
             </div>
 
 
-          </div>
-
-          {/* Tires thermal schematic diagram */}
-          <div className="flex flex-col items-center justify-center shrink-0 border-l border-slate-800/80 pl-4">
-            <span className="text-[8px] text-slate-500 font-bold tracking-widest uppercase mb-1.5">Tire Telemetry</span>
-            <div className="grid grid-cols-2 gap-1 bg-slate-900/60 p-1 rounded-xl border border-slate-800/60">
-              {/* Front Left */}
-              <div className="flex flex-col items-center justify-center border border-slate-800 rounded bg-slate-950/80 p-1 w-11 h-11">
-                <span className="text-[7px] text-slate-500 font-bold">FL</span>
-                <span className={`text-[8px] font-bold ${tireTemp < 60 ? 'text-cyan-400' : tireTemp > 115 ? 'text-rose-500 animate-pulse' : 'text-emerald-400'}`}>
-                  {tireTemp}°C
-                </span>
-                <span className="text-[7px] text-slate-400 font-mono">{100 - tireWear}%</span>
-              </div>
-              {/* Front Right */}
-              <div className="flex flex-col items-center justify-center border border-slate-800 rounded bg-slate-950/80 p-1 w-11 h-11">
-                <span className="text-[7px] text-slate-500 font-bold">FR</span>
-                <span className={`text-[8px] font-bold ${tireTemp < 60 ? 'text-cyan-400' : tireTemp > 115 ? 'text-rose-500 animate-pulse' : 'text-emerald-400'}`}>
-                  {tireTemp}°C
-                </span>
-                <span className="text-[7px] text-slate-400 font-mono">{100 - tireWear}%</span>
-              </div>
-              {/* Rear Left */}
-              <div className="flex flex-col items-center justify-center border border-slate-800 rounded bg-slate-950/80 p-1 w-11 h-11">
-                <span className="text-[7px] text-slate-500 font-bold">RL</span>
-                <span className={`text-[8px] font-bold ${tireTemp < 60 ? 'text-cyan-400' : tireTemp > 115 ? 'text-rose-500 animate-pulse' : 'text-emerald-400'}`}>
-                  {tireTemp}°C
-                </span>
-                <span className="text-[7px] text-slate-400 font-mono">{100 - tireWear}%</span>
-              </div>
-              {/* Rear Right */}
-              <div className="flex flex-col items-center justify-center border border-slate-800 rounded bg-slate-950/80 p-1 w-11 h-11">
-                <span className="text-[7px] text-slate-500 font-bold">RR</span>
-                <span className={`text-[8px] font-bold ${tireTemp < 60 ? 'text-cyan-400' : tireTemp > 115 ? 'text-rose-500 animate-pulse' : 'text-emerald-400'}`}>
-                  {tireTemp}°C
-                </span>
-                <span className="text-[7px] text-slate-400 font-mono">{100 - tireWear}%</span>
-              </div>
-            </div>
           </div>
         </div>
       </div>

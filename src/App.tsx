@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Play, Shield, Settings, Volume2, VolumeX, RotateCcw, Award, Check, HardDrive, ShoppingBag, Flame, Zap, Wrench, ChevronRight, BarChart2, Star, Clock } from 'lucide-react';
+import { Play, Shield, Settings, Volume2, VolumeX, RotateCcw, Award, Check, HardDrive, ShoppingBag, Flame, Zap, Wrench, ChevronRight, BarChart2, Star, Clock, Users } from 'lucide-react';
 import { Track, Car, CarUpgrades, LeaderboardEntry } from './types';
 import ThreeGame from './components/ThreeGame';
 import UnityExporter from './components/UnityExporter';
@@ -7,6 +7,8 @@ import Track3DPreview from './components/Track3DPreview';
 import ParticleExplosion from './components/ParticleExplosion';
 import TrackLeaderboard from './components/TrackLeaderboard';
 import { motion, AnimatePresence } from 'motion/react';
+import ProfileFriendsSection from './components/ProfileFriendsSection';
+import { auth, saveUserProfileToCloud } from './firebase';
 
 // Constant Tracks List
 const TRACKS: Track[] = [
@@ -166,7 +168,7 @@ const UPGRADE_COST = 120; // flat rate coins per upgrade level
 
 export default function App() {
   // Screen Router
-  const [activeScreen, setActiveScreen] = useState<'menu' | 'garage' | 'settings' | 'race' | 'unity-export'>('menu');
+  const [activeScreen, setActiveScreen] = useState<'menu' | 'garage' | 'settings' | 'race' | 'unity-export' | 'profile'>('menu');
   const [selectedTrackId, setSelectedTrackId] = useState<string>('track_city');
   const [selectedCarId, setSelectedCarId] = useState<string>('car_specter');
   const [selectedWeather, setSelectedWeather] = useState<'clear' | 'rain' | 'snow' | 'fog'>('clear');
@@ -207,7 +209,7 @@ export default function App() {
   });
 
   // Settings state
-  const [difficulty, setDifficulty] = useState<'easy' | 'medium' | 'hard'>('easy');
+  const [difficulty, setDifficulty] = useState<'easy' | 'medium' | 'legend'>('easy');
   const [audioEnabled, setAudioEnabled] = useState<boolean>(true);
   const [volume, setVolume] = useState<number>(0.5);
 
@@ -245,7 +247,7 @@ export default function App() {
     if (savedUpgrades) setCarUpgrades(JSON.parse(savedUpgrades));
     if (savedCustoms) setCarCustomizations(JSON.parse(savedCustoms));
     if (savedRecords) setBestTimes(JSON.parse(savedRecords));
-    if (savedDifficulty) setDifficulty(savedDifficulty as 'easy' | 'medium' | 'hard');
+    if (savedDifficulty) setDifficulty(savedDifficulty as 'easy' | 'medium' | 'legend');
     if (savedAudio) setAudioEnabled(savedAudio === 'true');
     if (savedVol) setVolume(parseFloat(savedVol));
     if (savedPlayerName) setPlayerNameState(savedPlayerName);
@@ -263,6 +265,16 @@ export default function App() {
     localStorage.setItem('race_upgrades', JSON.stringify(newUpgrades));
     localStorage.setItem('race_best_times', JSON.stringify(newRecords));
     localStorage.setItem('race_customizations', JSON.stringify(newCustoms));
+
+    if (auth.currentUser) {
+      saveUserProfileToCloud(auth.currentUser.uid, {
+        coins: newCoins,
+        unlockedCarIds: newUnlocked,
+        carUpgrades: newUpgrades,
+        bestTimes: newRecords,
+        carCustomizations: newCustoms
+      });
+    }
   };
 
   const updatePlayerName = (name: string) => {
@@ -486,10 +498,10 @@ export default function App() {
               </div>
 
               {/* Navigation Options */}
-              <nav className="flex bg-slate-900 p-1 rounded-xl border border-slate-800/60 text-sm font-semibold">
+              <nav className="flex bg-slate-900 p-1 rounded-xl border border-slate-800/60 text-sm font-semibold flex-wrap gap-1 md:gap-0">
                 <button
                   onClick={() => { setActiveScreen('menu'); setRaceResult(null); }}
-                  className={`px-4 py-2 rounded-lg transition-all ${
+                  className={`px-3 md:px-4 py-2 rounded-lg transition-all ${
                     activeScreen === 'menu' ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/10' : 'text-slate-400 hover:text-slate-200'
                   }`}
                 >
@@ -497,7 +509,7 @@ export default function App() {
                 </button>
                 <button
                   onClick={() => { setActiveScreen('garage'); setRaceResult(null); }}
-                  className={`px-4 py-2 rounded-lg transition-all ${
+                  className={`px-3 md:px-4 py-2 rounded-lg transition-all ${
                     activeScreen === 'garage' ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/10' : 'text-slate-400 hover:text-slate-200'
                   }`}
                 >
@@ -505,15 +517,24 @@ export default function App() {
                 </button>
                 <button
                   onClick={() => { setActiveScreen('settings'); setRaceResult(null); }}
-                  className={`px-4 py-2 rounded-lg transition-all ${
+                  className={`px-3 md:px-4 py-2 rounded-lg transition-all ${
                     activeScreen === 'settings' ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/10' : 'text-slate-400 hover:text-slate-200'
                   }`}
                 >
                   Settings
                 </button>
                 <button
+                  onClick={() => { setActiveScreen('profile'); setRaceResult(null); }}
+                  className={`px-3 md:px-4 py-2 rounded-lg transition-all flex items-center gap-1.5 ${
+                    activeScreen === 'profile' ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/10' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Users className="w-4 h-4" />
+                  Profile & Friends
+                </button>
+                <button
                   onClick={() => { setActiveScreen('unity-export'); setRaceResult(null); }}
-                  className={`px-4 py-2 rounded-lg transition-all ${
+                  className={`px-3 md:px-4 py-2 rounded-lg transition-all ${
                     activeScreen === 'unity-export' ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/10' : 'text-slate-400 hover:text-slate-200'
                   }`}
                 >
@@ -651,17 +672,22 @@ export default function App() {
               <div className="flex flex-col gap-2">
                 <span className="text-[10px] text-slate-500 font-bold tracking-widest uppercase">Opponents Difficulty</span>
                 <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800">
-                  {(['easy', 'medium', 'hard'] as const).map((diff) => (
+                  {(['easy', 'medium', 'legend'] as const).map((diff) => (
                     <button
                       key={diff}
-                      onClick={() => setDifficulty(diff)}
+                      onClick={() => {
+                        setDifficulty(diff);
+                        localStorage.setItem('race_difficulty', diff);
+                      }}
                       className={`px-3 py-1.5 rounded-lg text-xs font-bold uppercase transition-all ${
                         difficulty === diff
-                          ? 'bg-emerald-500 text-slate-950 shadow'
+                          ? diff === 'legend'
+                            ? 'bg-red-500 text-slate-950 font-black shadow shadow-red-500/20'
+                            : 'bg-emerald-500 text-slate-950 shadow'
                           : 'text-slate-500 hover:text-slate-300'
                       }`}
                     >
-                      {diff}
+                      {diff === 'legend' ? '🔥 LEGEND' : diff}
                     </button>
                   ))}
                 </div>
@@ -1442,6 +1468,47 @@ export default function App() {
               </div>
             </div>
           </motion.section>
+        )}
+
+        {/* VIEW 7: PROFILE & FRIENDS PANEL */}
+        {activeScreen === 'profile' && (
+          <motion.div
+            key="profile"
+            initial={{ opacity: 0, y: 15 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -15 }}
+            transition={{ duration: 0.35, ease: 'easeInOut' }}
+            className="flex-1 flex flex-col min-h-[500px]"
+          >
+            <ProfileFriendsSection
+              coins={coins}
+              unlockedCarIds={unlockedCarIds}
+              carUpgrades={carUpgrades}
+              carCustomizations={carCustomizations}
+              bestTimes={bestTimes}
+              difficulty={difficulty}
+              audioEnabled={audioEnabled}
+              volume={volume}
+              onLoadProgression={(prog) => {
+                if (prog.coins !== undefined) setCoins(prog.coins);
+                if (prog.unlockedCarIds !== undefined) setUnlockedCarIds(prog.unlockedCarIds);
+                if (prog.carUpgrades !== undefined) setCarUpgrades(prog.carUpgrades);
+                if (prog.carCustomizations !== undefined) setCarCustomizations(prog.carCustomizations);
+                if (prog.bestTimes !== undefined) setBestTimes(prog.bestTimes);
+                if (prog.playerName !== undefined) {
+                  setPlayerNameState(prog.playerName);
+                  localStorage.setItem('race_player_name', prog.playerName);
+                }
+                if (prog.difficulty !== undefined) setDifficulty(prog.difficulty);
+                if (prog.audioEnabled !== undefined) setAudioEnabled(prog.audioEnabled);
+                if (prog.volume !== undefined) setVolume(prog.volume);
+              }}
+              onSelectTrackAndStart={(trackId) => {
+                setSelectedTrackId(trackId);
+                setActiveScreen('race');
+              }}
+            />
+          </motion.div>
         )}
 
         {/* VIEW 6: UNITY SCRIPT EXPORTER CODE CENTER */}

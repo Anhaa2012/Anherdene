@@ -1,0 +1,23 @@
+{
+  "collections": {
+    "users": {
+      "description": "User profiles containing game progression state and settings",
+      "fields": {
+        "uid": "string",
+        "email": "string",
+        "displayName": "string",
+        "coins": "number",
+        "unlockedCarIds": "array",
+        "carUpgrades": "map",
+        "carCustomizations": "map",
+        "bestTimes": "map",
+        "difficulty": "string",
+        "audioEnabled": "boolean",
+        "volume": "number",
+        "friendUids": "array",
+        "onlineStatus": "string",
+        "lastSeen": "timestamp"
+      }
+    }
+  }
+}
