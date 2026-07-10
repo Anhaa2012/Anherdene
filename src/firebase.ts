@@ -62,7 +62,77 @@ export interface UserProfile {
 }
 
 // Save profile state to Firestore
+export enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+export interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
+  }
+}
+
+export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData?.map(provider => ({
+        providerId: provider.providerId,
+        email: provider.email,
+      })) || []
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
+function isPermissionError(error: any): boolean {
+  if (!error) return false;
+  const msg = (error.message || String(error)).toLowerCase();
+  return msg.includes("permission") || msg.includes("denied") || error.code === "permission-denied";
+}
+
+function isOfflineError(error: any): boolean {
+  if (!error) return false;
+  const msg = (error.message || String(error)).toLowerCase();
+  return msg.includes("offline") || msg.includes("network") || msg.includes("failed to get document because the client is offline");
+}
+
+function handleCatchError(error: any, opType: OperationType, path: string) {
+  if (isPermissionError(error)) {
+    handleFirestoreError(error, opType, path);
+  } else if (isOfflineError(error)) {
+    console.warn(`Firestore Offline Warning [${opType} on ${path}]:`, error.message || error);
+  } else {
+    console.error(`Firestore Error [${opType} on ${path}]:`, error);
+  }
+}
+
 export async function saveUserProfileToCloud(uid: string, data: Partial<UserProfile>) {
+  const path = `users/${uid}`;
   try {
     const userDocRef = doc(db, "users", uid);
     await setDoc(userDocRef, {
@@ -70,12 +140,13 @@ export async function saveUserProfileToCloud(uid: string, data: Partial<UserProf
       lastSeen: serverTimestamp()
     }, { merge: true });
   } catch (error) {
-    console.error("Error saving user profile to cloud:", error);
+    handleCatchError(error, OperationType.WRITE, path);
   }
 }
 
 // Get user profile state from Firestore
 export async function getUserProfileFromCloud(uid: string): Promise<UserProfile | null> {
+  const path = `users/${uid}`;
   try {
     const userDocRef = doc(db, "users", uid);
     const docSnap = await getDoc(userDocRef);
@@ -84,13 +155,14 @@ export async function getUserProfileFromCloud(uid: string): Promise<UserProfile 
     }
     return null;
   } catch (error) {
-    console.error("Error loading user profile from cloud:", error);
+    handleCatchError(error, OperationType.GET, path);
     return null;
   }
 }
 
 // Search user by email to add as friend
 export async function findUserByEmail(email: string): Promise<{ uid: string; email: string; displayName: string } | null> {
+  const path = "users";
   try {
     const usersRef = collection(db, "users");
     const q = query(usersRef, where("email", "==", email.toLowerCase().trim()));
@@ -106,7 +178,7 @@ export async function findUserByEmail(email: string): Promise<{ uid: string; ema
     }
     return null;
   } catch (error) {
-    console.error("Error finding user by email:", error);
+    handleCatchError(error, OperationType.LIST, path);
     return null;
   }
 }
@@ -116,7 +188,7 @@ export async function fetchUsersByUids(uids: string[]): Promise<UserProfile[]> {
   if (!uids || uids.length === 0) return [];
   try {
     const profiles: UserProfile[] = [];
-    // Firestore in query supports max 10/30 items, so chunk it or fetch individually since friends lists are typically small
+    // Fetch individually since friends lists are typically small
     for (const uid of uids) {
       const p = await getUserProfileFromCloud(uid);
       if (p) {
@@ -125,13 +197,14 @@ export async function fetchUsersByUids(uids: string[]): Promise<UserProfile[]> {
     }
     return profiles;
   } catch (error) {
-    console.error("Error fetching users by uids:", error);
+    handleCatchError(error, OperationType.LIST, `users_batch`);
     return [];
   }
 }
 
 // Update friendship: add friend UID to user's friend list
 export async function addFriendToUser(userUid: string, friendUid: string) {
+  const path = `users/${userUid}`;
   try {
     const userDocRef = doc(db, "users", userUid);
     const docSnap = await getDoc(userDocRef);
@@ -144,12 +217,13 @@ export async function addFriendToUser(userUid: string, friendUid: string) {
       }
     }
   } catch (error) {
-    console.error("Error adding friend:", error);
+    handleCatchError(error, OperationType.WRITE, path);
   }
 }
 
 // Update friendship: remove friend UID from user's friend list
 export async function removeFriendFromUser(userUid: string, friendUid: string) {
+  const path = `users/${userUid}`;
   try {
     const userDocRef = doc(db, "users", userUid);
     const docSnap = await getDoc(userDocRef);
@@ -160,6 +234,6 @@ export async function removeFriendFromUser(userUid: string, friendUid: string) {
       await updateDoc(userDocRef, { friendUids: updated });
     }
   } catch (error) {
-    console.error("Error removing friend:", error);
+    handleCatchError(error, OperationType.WRITE, path);
   }
 }

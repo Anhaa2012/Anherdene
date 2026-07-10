@@ -153,8 +153,13 @@ export default function ProfileFriendsSection({
 
           // Fetch friends list
           await refreshFriendsList(firebaseUser.uid);
-        } catch (err) {
-          console.error("Error loading profile on auth change:", err);
+        } catch (err: any) {
+          const errMsg = err?.message || String(err);
+          if (errMsg.toLowerCase().includes("offline")) {
+            console.warn("Offline during profile auth change load:", err);
+          } else {
+            console.error("Error loading profile on auth change:", err);
+          }
         }
       } else {
         // Logged out
@@ -246,7 +251,7 @@ export default function ProfileFriendsSection({
         localStorage.setItem("race_player_name", cleanName);
       }
     } catch (err: any) {
-      console.error("Auth error:", err);
+      console.warn("Auth error:", err);
       if (err.code === "auth/email-already-in-use") {
         setAuthError("Энэ имэйл хаяг аль хэдийн бүртгэгдсэн байна.");
       } else if (err.code === "auth/invalid-credential" || err.code === "auth/wrong-password" || err.code === "auth/user-not-found") {
@@ -273,7 +278,7 @@ export default function ProfileFriendsSection({
       const cleanName = firebaseUser.displayName || firebaseUser.email?.split("@")[0] || "Racer";
       localStorage.setItem("race_player_name", cleanName);
     } catch (err: any) {
-      console.error("Google Auth error:", err);
+      console.warn("Google Auth error:", err);
       if (err.code === "auth/popup-blocked") {
         setAuthError("Нэвтрэх цонх хаагдсан байна. Хөтчийнхөө 'Pop-up blocker' тохиргоог шалгана уу.");
       } else {
